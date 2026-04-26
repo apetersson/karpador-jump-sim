@@ -432,7 +432,11 @@ impl<R: Rules> WallTimeSimulator<R> {
                 next = next.min(support.ready_at);
             }
         }
-        if next == u64::MAX { now + 60 } else { next }
+        if next == u64::MAX {
+            now + 60
+        } else {
+            next
+        }
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
@@ -743,12 +747,13 @@ impl<R: Rules> WallTimeSimulator<R> {
                     .iter()
                     .position(|support| support.id == support_id)
                 else {
-                    self.advance_minutes(state, 1);
                     return;
                 };
                 let before_kp = state.magikarp.kp;
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
+                let before_food = self.total_food_available(state);
+                let before_sodas = state.training_sodas;
                 let name = state.supports[index].name;
                 self.use_support(state, index, rng);
                 log_event(
@@ -756,14 +761,15 @@ impl<R: Rules> WallTimeSimulator<R> {
                     state,
                     "use_support",
                     format!(
-                        "{}: +{} kp, +{} coins, +{} diamonds",
+                        "{}: +{} kp, +{} coins, +{} diamonds, +{} berries, +{} training soda",
                         name,
                         state.magikarp.kp.saturating_sub(before_kp),
                         state.coins.saturating_sub(before_coins),
-                        state.diamonds.saturating_sub(before_diamonds)
+                        state.diamonds.saturating_sub(before_diamonds),
+                        self.total_food_available(state).saturating_sub(before_food),
+                        state.training_sodas.saturating_sub(before_sodas)
                     ),
                 );
-                self.advance_minutes(state, 1);
             }
             WallAction::UseTrainingSoda => {
                 if state.training_sodas > 0 && state.stamina < state.max_stamina {
@@ -923,7 +929,6 @@ impl<R: Rules> WallTimeSimulator<R> {
             WallAction::EatBerries { berry_id, count } => {
                 let Some(index) = state.berries.iter().position(|berry| berry.id == berry_id)
                 else {
-                    self.advance_minutes(state, 1);
                     return;
                 };
                 let eaten = state.berries[index].available.min(count);
@@ -946,7 +951,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                         ),
                     );
                 }
-                self.advance_minutes(state, 1);
             }
             WallAction::LeagueFight { intent } => {
                 let intentional_loss = intent == LeagueFightIntent::IntentionallyLose;
@@ -1048,6 +1052,9 @@ impl<R: Rules> WallTimeSimulator<R> {
                         / 10_000;
                     state.coins = state.coins.saturating_add(gain);
                 }
+            }
+            SupportSkill::HomeTreasure => {
+                self.collect_home_treasure(state, rng);
             }
             SupportSkill::RecoverSkills => {
                 let now = state.now();
@@ -2553,12 +2560,10 @@ mod tests {
         let mut policy = StopPolicy;
         let result = simulator.run_with_policy(7, &mut policy);
         assert_eq!(result.final_state.action_count, 0);
-        assert!(
-            result
-                .action_log
-                .iter()
-                .all(|entry| entry.event != "train" && entry.event != "eat_berries")
-        );
+        assert!(result
+            .action_log
+            .iter()
+            .all(|entry| entry.event != "train" && entry.event != "eat_berries"));
     }
 
     #[test]
@@ -2607,11 +2612,9 @@ mod tests {
         let actions = simulator.available_actions(&state);
         assert!(!actions.is_empty());
         for available in &actions {
-            assert!(
-                actions
-                    .iter()
-                    .any(|candidate| candidate.action == available.action)
-            );
+            assert!(actions
+                .iter()
+                .any(|candidate| candidate.action == available.action));
         }
     }
 
@@ -2670,6 +2673,57 @@ mod tests {
     }
 
     #[test]
+    fn food_support_and_feeding_are_tap_actions() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(ApproxRules, data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        let before_minute = state.now();
+        let snorlax = state
+            .supports
+            .iter_mut()
+            .find(|support| support.id == "snorlax")
+            .expect("approx data includes Snorlax");
+        snorlax.owned = true;
+        snorlax.ready_at = before_minute;
+        let before_food = simulator.total_food_available(&state);
+        let mut purchases = Vec::new();
+        let mut action_log = Vec::new();
+
+        simulator.apply_action(
+            &mut state,
+            WallAction::UseSupport {
+                support_id: "snorlax".to_string(),
+            },
+            &mut rng,
+            &mut purchases,
+            &mut action_log,
+        );
+
+        assert_eq!(state.now(), before_minute);
+        assert!(simulator.total_food_available(&state) > before_food);
+        assert!(action_log
+            .last()
+            .is_some_and(|entry| entry.detail.contains("berries")));
+
+        let berry_id = state
+            .berries
+            .iter()
+            .find(|berry| berry.available > 0)
+            .map(|berry| berry.id.to_string())
+            .expect("Snorlax added food");
+        simulator.apply_action(
+            &mut state,
+            WallAction::EatBerries { berry_id, count: 1 },
+            &mut rng,
+            &mut purchases,
+            &mut action_log,
+        );
+
+        assert_eq!(state.now(), before_minute);
+    }
+
+    #[test]
     fn one_intentional_loss_per_reached_league() {
         let data = GameData::approx_v1();
         let result = sim().run(3, data.preset_plan("none"));
@@ -2708,11 +2762,10 @@ mod tests {
     fn plan_contains_only_support_and_decor_targets() {
         let data = GameData::approx_v1();
         let plan = data.preset_plan("balanced");
-        assert!(
-            plan.targets
-                .iter()
-                .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor))
-        );
+        assert!(plan
+            .targets
+            .iter()
+            .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor)));
     }
 
     #[test]
@@ -2737,60 +2790,46 @@ mod tests {
         let result = sim().run(42, data.preset_plan("balanced"));
         assert!(result.final_state.pending_diamond_rewards.is_empty());
         assert_eq!(result.final_state.pending_achievement_claims, 0);
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::Tutorial)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::TrainerRank)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::LeagueBattleReward)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::Achievement)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::PatternDiscovery)
-        );
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::Tutorial));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::TrainerRank));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::LeagueBattleReward));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::Achievement));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::PatternDiscovery));
     }
 
     #[test]
     fn feeding_and_training_achievements_do_not_award_diamonds() {
         let data = GameData::approx_v1();
         let result = sim().run(42, data.preset_plan("balanced"));
-        assert!(
-            !result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.detail.starts_with("times fed"))
-        );
-        assert!(
-            !result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.detail.starts_with("times trained"))
-        );
+        assert!(!result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.detail.starts_with("times fed")));
+        assert!(!result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.detail.starts_with("times trained")));
     }
 }

@@ -1,8 +1,8 @@
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use karpador_sim::{
-    ApkRules, ApproxRules, EarlyCompeteStrategy, GameData, GreedyKpStrategy, OptimizerConfig,
-    ShopRoiStrategy, SimConfig, Simulator, WallSimConfig, WallTimeSimulator, audit_curves,
-    optimize_purchase_plans,
+    audit_curves, optimize_purchase_plans, ApkRules, ApproxRules, EarlyCompeteStrategy, GameData,
+    GreedyKpStrategy, OptimizerConfig, ShopRoiStrategy, SimConfig, Simulator, WallSimConfig,
+    WallTimeSimulator,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -210,6 +210,7 @@ fn optimize(args: OptimizeArgs) -> anyhow_free::Result<()> {
             seed: args.seed,
             beam_width: args.beam_width,
             training_upgrade_share: args.training_upgrade_share.min(10_000),
+            sim_greedy_top3: true,
         },
     );
 

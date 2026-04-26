@@ -12,6 +12,7 @@ pub struct OptimizerConfig {
     pub seed: u64,
     pub beam_width: usize,
     pub training_upgrade_share: u32,
+    pub sim_greedy_top3: bool,
 }
 
 impl Default for OptimizerConfig {
@@ -21,6 +22,7 @@ impl Default for OptimizerConfig {
             seed: 42,
             beam_width: 10,
             training_upgrade_share: 0,
+            sim_greedy_top3: true,
         }
     }
 }
@@ -60,11 +62,15 @@ pub fn optimize_purchase_plans<R: Rules + Clone>(
     config: OptimizerConfig,
 ) -> OptimizerReport {
     let candidates = data.purchase_candidates();
-    let plans = if candidates.len() <= 9 {
-        exhaustive_plans(candidates)
+    let mut plans = if candidates.len() <= 9 {
+        exhaustive_plans(candidates.clone())
     } else {
-        beam_plans(&data, candidates, config.beam_width.max(1))
+        beam_plans(&data, candidates.clone(), config.beam_width.max(1))
     };
+    if config.sim_greedy_top3 && candidates.len() > 9 {
+        let simulator = WallTimeSimulator::new(rules.clone(), data.clone(), sim_config.clone());
+        push_sim_greedy_top3_plans(&simulator, &candidates, &config, &mut plans);
+    }
     let mut scores = Vec::with_capacity(plans.len());
 
     for plan in &plans {
@@ -499,6 +505,68 @@ fn push_plan_if_new(plans: &mut Vec<PurchasePlan>, name: String, targets: Vec<Pu
     }
 }
 
+fn push_sim_greedy_top3_plans<R: Rules>(
+    simulator: &WallTimeSimulator<R>,
+    candidates: &[PurchaseTarget],
+    config: &OptimizerConfig,
+    plans: &mut Vec<PurchasePlan>,
+) {
+    let mut frontier: Vec<Vec<PurchaseTarget>> = vec![Vec::new()];
+    for _depth in 0..5 {
+        let mut next_frontier = Vec::new();
+        for prefix in frontier {
+            let mut scored = candidates
+                .iter()
+                .filter(|target| !prefix.contains(target))
+                .map(|target| {
+                    let mut targets = prefix.clone();
+                    targets.push(target.clone());
+                    let plan = PurchasePlan {
+                        name: format!(
+                            "sim-greedy-top3:{}",
+                            targets
+                                .iter()
+                                .map(|target| target.id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(">")
+                        ),
+                        targets,
+                    };
+                    let score = score_plan(simulator, plan.clone(), config);
+                    (score, plan)
+                })
+                .collect::<Vec<_>>();
+            scored.sort_by(|(a, _), (b, _)| {
+                b.success_rate
+                    .total_cmp(&a.success_rate)
+                    .then_with(|| b.progress_score.total_cmp(&a.progress_score))
+                    .then_with(|| a.median_days.total_cmp(&b.median_days))
+                    .then_with(|| a.mean_days.total_cmp(&b.mean_days))
+            });
+            next_frontier.extend(
+                scored
+                    .into_iter()
+                    .take(3)
+                    .map(|(_, plan)| plan.targets)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        frontier = next_frontier;
+    }
+
+    for targets in frontier {
+        let name = format!(
+            "sim-greedy-top3:{}",
+            targets
+                .iter()
+                .map(|target| target.id.as_str())
+                .collect::<Vec<_>>()
+                .join(">")
+        );
+        push_plan_if_new(plans, name, targets);
+    }
+}
+
 fn select_targets(candidates: &[PurchaseTarget], ids: &[&str]) -> Option<Vec<PurchaseTarget>> {
     let targets = ids
         .iter()
@@ -582,6 +650,7 @@ fn economy_priority_score(data: &GameData, target: &PurchaseTarget) -> u32 {
             .map(|support| match support.skill {
                 SupportSkill::Coins { .. } => 8_000,
                 SupportSkill::Item { .. } => 5_000,
+                SupportSkill::HomeTreasure => 6_500,
                 SupportSkill::RecoverSkills => 3_500,
                 _ => 0,
             })
@@ -616,6 +685,7 @@ mod tests {
             seed: 99,
             beam_width: 2,
             training_upgrade_share: 0,
+            sim_greedy_top3: false,
         };
         let a = optimize_purchase_plans(
             ApproxRules,

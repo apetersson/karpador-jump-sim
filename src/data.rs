@@ -68,6 +68,7 @@ pub enum SupportSkill {
     Diamonds { amount: u32 },
     Food { amount: u32 },
     Item { base_coin_value: u64 },
+    HomeTreasure,
     RecoverSkills,
     LeaguePoint,
     TrainingGreat,
@@ -1893,7 +1894,7 @@ fn support_skill(id: u32, row: &SupportPokemonRow) -> SupportSkill {
         },
         7 => SupportSkill::LeaguePoint,
         8 => SupportSkill::RecoverSkills,
-        10 => SupportSkill::Item { base_coin_value: 0 },
+        10 => SupportSkill::HomeTreasure,
         13 => SupportSkill::KpBoost {
             multiplier_permyriad: 15_000,
         },

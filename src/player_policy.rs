@@ -140,30 +140,55 @@ impl ActivePlayerPolicy {
         None
     }
 
-    fn eat_berries_action(actions: &[AvailableAction], wanted: u32) -> Option<WallAction> {
+    fn eat_berries_action(
+        state: &GameState,
+        actions: &[AvailableAction],
+        wanted: u32,
+    ) -> Option<WallAction> {
         actions
             .iter()
             .filter_map(|available| match &available.action {
-                WallAction::EatBerries { berry_id, count } if *count <= wanted => {
-                    Some((berry_id, *count, available.action.clone()))
-                }
+                WallAction::EatBerries { berry_id, count } if *count <= wanted => state
+                    .berries
+                    .iter()
+                    .position(|berry| berry.id == *berry_id)
+                    .map(|index| {
+                        (
+                            state.berries[index].level,
+                            std::cmp::Reverse(index),
+                            *count,
+                            available.action.clone(),
+                        )
+                    }),
                 _ => None,
             })
-            .max_by_key(|(berry_id, count, _)| (*count, std::cmp::Reverse(berry_id.as_str())))
-            .map(|(_, _, action)| action)
+            .max_by_key(|(level, index, count, _)| (*level, *index, *count))
+            .map(|(_, _, _, action)| action)
     }
 
-    fn eat_all_berries_action(actions: &[AvailableAction]) -> Option<WallAction> {
+    fn eat_all_berries_action(
+        state: &GameState,
+        actions: &[AvailableAction],
+    ) -> Option<WallAction> {
         actions
             .iter()
             .filter_map(|available| match &available.action {
-                WallAction::EatBerries { berry_id, count } => {
-                    Some((berry_id, *count, available.action.clone()))
-                }
+                WallAction::EatBerries { berry_id, count } => state
+                    .berries
+                    .iter()
+                    .position(|berry| berry.id == *berry_id)
+                    .map(|index| {
+                        (
+                            state.berries[index].level,
+                            std::cmp::Reverse(index),
+                            *count,
+                            available.action.clone(),
+                        )
+                    }),
                 _ => None,
             })
-            .max_by_key(|(berry_id, count, _)| (*count, std::cmp::Reverse(berry_id.as_str())))
-            .map(|(_, _, action)| action)
+            .max_by_key(|(level, index, count, _)| (*level, *index, *count))
+            .map(|(_, _, _, action)| action)
     }
 
     fn equal_berry_upgrade_action(
@@ -286,7 +311,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
             {
                 return PolicyDecision::Execute(action);
             }
-            if let Some(action) = Self::eat_all_berries_action(actions) {
+            if let Some(action) = Self::eat_all_berries_action(state, actions) {
                 return PolicyDecision::Execute(action);
             }
         }
@@ -319,7 +344,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
         }
         if self.berries_eaten_before_fight < 3 {
             if let Some(action) =
-                Self::eat_berries_action(actions, 3 - self.berries_eaten_before_fight)
+                Self::eat_berries_action(state, actions, 3 - self.berries_eaten_before_fight)
             {
                 return PolicyDecision::Execute(action);
             }
@@ -364,7 +389,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
             return PolicyDecision::Execute(action);
         }
         if !self.ate_rest_after_block {
-            if let Some(action) = Self::eat_all_berries_action(actions) {
+            if let Some(action) = Self::eat_all_berries_action(state, actions) {
                 self.ate_rest_after_block = true;
                 return PolicyDecision::Execute(action);
             }
