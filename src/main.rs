@@ -117,6 +117,9 @@ struct OptimizeArgs {
     #[arg(long, default_value_t = 10)]
     sessions_per_day: u8,
 
+    #[arg(long, default_value_t = 0)]
+    training_upgrade_share: u32,
+
     #[arg(long)]
     json: bool,
 }
@@ -206,6 +209,7 @@ fn optimize(args: OptimizeArgs) -> anyhow_free::Result<()> {
             runs: args.runs,
             seed: args.seed,
             beam_width: args.beam_width,
+            training_upgrade_share: args.training_upgrade_share.min(10_000),
         },
     );
 

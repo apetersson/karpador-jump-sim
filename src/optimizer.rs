@@ -2,6 +2,7 @@ use serde::Serialize;
 
 use crate::data::{DecorEffect, GameData, SupportSkill};
 use crate::model::{PurchaseKind, PurchasePlan, PurchaseTarget};
+use crate::player_policy::ActivePlayerPolicy;
 use crate::rules::Rules;
 use crate::walltime::{WallRunOutcome, WallSimConfig, WallTimeSimulator};
 
@@ -10,6 +11,7 @@ pub struct OptimizerConfig {
     pub runs: u32,
     pub seed: u64,
     pub beam_width: usize,
+    pub training_upgrade_share: u32,
 }
 
 impl Default for OptimizerConfig {
@@ -18,6 +20,7 @@ impl Default for OptimizerConfig {
             runs: 100,
             seed: 42,
             beam_width: 10,
+            training_upgrade_share: 0,
         }
     }
 }
@@ -104,7 +107,15 @@ fn score_plan<R: Rules>(
     let mut league_progress = 0_f64;
 
     for i in 0..config.runs {
-        let result = simulator.run(config.seed + i as u64, plan.clone());
+        let result = if config.training_upgrade_share > 0 {
+            let mut policy = ActivePlayerPolicy::with_purchase_plan_and_training_share(
+                plan.clone(),
+                config.training_upgrade_share.min(10_000),
+            );
+            simulator.run_with_policy(config.seed + i as u64, &mut policy)
+        } else {
+            simulator.run(config.seed + i as u64, plan.clone())
+        };
         if matches!(result.outcome, WallRunOutcome::TargetReached) {
             successes += 1;
         }
@@ -604,6 +615,7 @@ mod tests {
             runs: 2,
             seed: 99,
             beam_width: 2,
+            training_upgrade_share: 0,
         };
         let a = optimize_purchase_plans(
             ApproxRules,
