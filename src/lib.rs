@@ -9,7 +9,7 @@ pub mod strategy;
 pub mod walltime;
 
 pub use curve_audit::{
-    audit_curves, CurveAuditReport, CurveAuditSummary, CurveFinding, CurveSeverity,
+    CurveAuditReport, CurveAuditSummary, CurveFinding, CurveSeverity, audit_curves,
 };
 pub use data::{DataAuditReport, GameData};
 pub use model::{
@@ -17,11 +17,14 @@ pub use model::{
     PendingDiamondReward, Provenance, PurchaseKind, PurchasePlan, PurchaseTarget, SupportState,
     WallClock,
 };
-pub use optimizer::{optimize_purchase_plans, OptimizerConfig, OptimizerReport, PlanScore};
+pub use optimizer::{OptimizerConfig, OptimizerReport, PlanScore, optimize_purchase_plans};
 pub use player_policy::{
-    ActivePlayerPolicy, PolicyDecisionView, PolicySessionState, WallSessionAction, WallTimePolicy,
+    ActivePlayerPolicy, AvailableAction, DecisionContext, LeagueFightIntent, PolicyDecision,
+    WallAction, WallTimePolicy,
 };
 pub use rules::{ApkRules, ApproxRules, Rules, TrainingResult};
 pub use sim::{ExperimentReport, RunOutcome, SimConfig, SimResult, Simulator};
 pub use strategy::{EarlyCompeteStrategy, GreedyKpStrategy, ShopRoiStrategy, Strategy};
-pub use walltime::{WallRunOutcome, WallSimConfig, WallSimResult, WallTimeSimulator};
+pub use walltime::{
+    InvalidPolicyAction, WallRunOutcome, WallSimConfig, WallSimResult, WallTimeSimulator,
+};

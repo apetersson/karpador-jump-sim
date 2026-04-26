@@ -50,8 +50,6 @@ pub struct GameState {
     pub max_food: u32,
     pub league: u32,
     pub competition: u32,
-    pub league_loss_done: Vec<bool>,
-    pub must_max_after_intentional_loss: bool,
     pub generation: u32,
     pub retirements: u32,
     pub berries: Vec<BerryState>,

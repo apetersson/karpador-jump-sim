@@ -9,7 +9,8 @@ use crate::model::{
     PurchaseTarget, SupportState, WallClock,
 };
 use crate::player_policy::{
-    ActivePlayerPolicy, PolicyDecisionView, PolicySessionState, WallSessionAction, WallTimePolicy,
+    ActivePlayerPolicy, AvailableAction, DecisionContext, LeagueFightIntent, PolicyDecision,
+    WallAction, WallTimePolicy,
 };
 use crate::rules::Rules;
 
@@ -37,6 +38,7 @@ pub enum WallRunOutcome {
     TargetReached,
     ActionLimit,
     DayLimit,
+    InvalidPolicyAction,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,7 +53,17 @@ pub struct WallSimResult {
     pub diamond_income_by_source: Vec<DiamondIncomeSummary>,
     pub action_log: Vec<ActionLogEntry>,
     pub final_state: GameState,
+    pub invalid_policy_action: Option<InvalidPolicyAction>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InvalidPolicyAction {
+    pub minute: u64,
+    pub day: u32,
+    pub time: String,
+    pub action: WallAction,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -93,22 +105,18 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     pub fn run(&self, seed: u64, plan: PurchasePlan) -> WallSimResult {
-        let mut policy = ActivePlayerPolicy;
-        self.run_with_policy(seed, plan, &mut policy)
+        let mut policy = ActivePlayerPolicy::with_purchase_plan(plan);
+        self.run_with_policy(seed, &mut policy)
     }
 
-    pub fn run_with_policy<P: WallTimePolicy>(
-        &self,
-        seed: u64,
-        plan: PurchasePlan,
-        policy: &mut P,
-    ) -> WallSimResult {
+    pub fn run_with_policy<P: WallTimePolicy>(&self, seed: u64, policy: &mut P) -> WallSimResult {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut state = self.initial_wall_state(&mut rng);
         let mut purchases = Vec::new();
         let mut action_log = Vec::new();
-        let mut plan_cursor = 0_usize;
         let mut session_count = 0_u32;
+        let mut invalid_policy_action = None;
+        let plan_name = policy.result_plan_name();
         log_event(
             &mut action_log,
             &state,
@@ -119,7 +127,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             ),
         );
 
-        while state.action_count < self.config.max_actions
+        'run: while state.action_count < self.config.max_actions
             && state.clock.day < self.config.max_wall_days
             && state.league < self.config.target_league
         {
@@ -141,31 +149,52 @@ impl<R: Rules> WallTimeSimulator<R> {
                     state.diamonds
                 ),
             );
-            let mut ctx = policy.begin_session();
+            policy.begin_session();
             let mut actions_in_session = 0_u32;
 
             loop {
                 self.refresh_timers(&mut state);
-                let action = {
-                    let view = self.policy_decision_view(&state, &plan, plan_cursor, &ctx);
-                    policy.decide(&view)
+                let available_actions = self.available_actions(&state);
+                let decision = {
+                    let context = DecisionContext {
+                        state: &state,
+                        available_actions: &available_actions,
+                    };
+                    policy.choose_action(&context)
                 };
-                let Some(action) = action else {
-                    break;
+                let action = match decision {
+                    PolicyDecision::Execute(action) => action,
+                    PolicyDecision::EndSession => break,
                 };
-                self.apply_session_action(
+                if !available_actions
+                    .iter()
+                    .any(|available| available.action == action)
+                {
+                    invalid_policy_action = Some(invalid_policy_action_detail(
+                        &state,
+                        action.clone(),
+                        "policy selected an action that is not currently available".to_string(),
+                    ));
+                    log_event(
+                        &mut action_log,
+                        &state,
+                        "invalid_policy_action",
+                        format!("{:?}", action),
+                    );
+                    break 'run;
+                }
+                let before = state.clone();
+                self.apply_action(
                     &mut state,
-                    action,
+                    action.clone(),
                     &mut rng,
-                    &mut ctx,
-                    &plan,
-                    &mut plan_cursor,
                     &mut purchases,
                     &mut action_log,
                 );
                 state.action_count += 1;
                 actions_in_session += 1;
                 self.update_magikarp_level_and_rewards(&mut state);
+                policy.observe_action(&before, &action, &state);
 
                 if state.league >= self.config.target_league || actions_in_session > 1_000 {
                     break;
@@ -201,7 +230,9 @@ impl<R: Rules> WallTimeSimulator<R> {
             ),
         );
 
-        let outcome = if state.league >= self.config.target_league {
+        let outcome = if invalid_policy_action.is_some() {
+            WallRunOutcome::InvalidPolicyAction
+        } else if state.league >= self.config.target_league {
             WallRunOutcome::TargetReached
         } else if state.clock.day >= self.config.max_wall_days {
             WallRunOutcome::DayLimit
@@ -217,7 +248,7 @@ impl<R: Rules> WallTimeSimulator<R> {
 
         WallSimResult {
             seed,
-            plan: plan.name,
+            plan: plan_name,
             dataset: self.data.name,
             outcome,
             wall_days,
@@ -226,6 +257,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             diamond_income_by_source,
             action_log,
             final_state: state,
+            invalid_policy_action,
             warnings,
         }
     }
@@ -260,7 +292,6 @@ impl<R: Rules> WallTimeSimulator<R> {
         state.league_loss_random_events_today = 0;
         state.discovered_patterns = 0;
         state.login_days_claimed = 0;
-        state.league_loss_done = vec![false; self.data.leagues.len()];
         state.home_treasure_ready_at = state.now();
         state.home_random_event_ready_at = state.now();
         state.next_food_spawn_at =
@@ -391,11 +422,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 next = next.min(support.ready_at);
             }
         }
-        if next == u64::MAX {
-            now + 60
-        } else {
-            next
-        }
+        if next == u64::MAX { now + 60 } else { next }
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
@@ -409,7 +436,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                 .enumerate()
                 .any(|(index, berry)| berry.available > 0 && self.berry_is_unlocked(state, index))
             || self.expected_jump_clears_current_opponent(state)
-            || (state.must_max_after_intentional_loss && state.is_magikarp_maxed())
             || state.supports.iter().enumerate().any(|(i, support)| {
                 support.owned
                     && support.ready_at <= state.now()
@@ -446,65 +472,155 @@ impl<R: Rules> WallTimeSimulator<R> {
         (60 / seconds).max(1)
     }
 
-    fn policy_decision_view<'a>(
-        &self,
-        state: &'a GameState,
-        plan: &'a PurchasePlan,
-        plan_cursor: usize,
-        session: &'a PolicySessionState,
-    ) -> PolicyDecisionView<'a> {
-        let needed_berries = 3_u32.saturating_sub(session.berries_eaten_before_fight);
-        let ready_support = state
-            .supports
-            .iter()
-            .enumerate()
-            .find(|(i, support)| {
-                support.owned
-                    && support.ready_at <= state.now()
-                    && self.support_is_unlocked(state, *i)
-            })
-            .map(|(i, _)| i);
-        let support_on_cooldown = state.supports.iter().enumerate().any(|(i, support)| {
-            support.owned && support.ready_at > state.now() && self.support_is_unlocked(state, i)
-        });
-        PolicyDecisionView {
-            state,
-            plan,
-            plan_cursor,
-            session,
-            home_treasure_available: self.home_treasure_available(state),
-            home_random_event_ready: state.home_random_event_ready_at <= state.now(),
-            kp_gain_buff_active: self.active_kp_gain_buff_permyriad(state) > 10_000,
-            next_support_upgrade: self.next_support_upgrade(state),
-            ready_support,
-            support_on_cooldown,
-            can_buy_next_plan_item: self.can_buy_next_plan_item(state, plan, plan_cursor),
-            next_equal_berry_upgrade: self.next_equal_berry_upgrade(state),
-            next_min_berries_to_eat: (needed_berries > 0)
-                .then(|| self.next_berries_to_eat(state, needed_berries))
-                .flatten(),
-            next_rest_berries_to_eat: self.next_berries_to_eat(state, u32::MAX),
-            should_take_intentional_loss: self.should_take_intentional_loss(state),
-            expected_jump_clears_current_opponent: self
-                .expected_jump_clears_current_opponent(state),
-            forced_league_progress_after_max: state.must_max_after_intentional_loss
-                && state.is_magikarp_maxed(),
+    fn available_actions(&self, state: &GameState) -> Vec<AvailableAction> {
+        let mut actions = Vec::new();
+        if self.home_treasure_available(state) {
+            actions.push(available(
+                WallAction::CollectHomeTreasure,
+                "home treasure is ready",
+            ));
         }
+        if state.pending_achievement_claims > 0 {
+            actions.push(available(
+                WallAction::ClaimAchievements,
+                "achievement rewards are pending",
+            ));
+        }
+        if state.home_random_event_ready_at <= state.now() {
+            actions.push(available(
+                WallAction::TriggerHomeEvent,
+                "home random event cooldown is ready",
+            ));
+        }
+        for (index, support) in state.supports.iter().enumerate() {
+            if support.owned
+                && self.support_is_unlocked(state, index)
+                && self
+                    .next_support_upgrade_cost(state, index)
+                    .is_some_and(|cost| state.candy >= cost)
+            {
+                actions.push(available(
+                    WallAction::UpgradeSupport {
+                        support_id: support.id.to_string(),
+                    },
+                    "support upgrade can be paid with candy",
+                ));
+            }
+        }
+        for (index, support) in state.supports.iter().enumerate() {
+            if support.owned
+                && support.ready_at <= state.now()
+                && self.support_is_unlocked(state, index)
+            {
+                actions.push(available(
+                    WallAction::UseSupport {
+                        support_id: support.id.to_string(),
+                    },
+                    "support skill is ready",
+                ));
+            }
+        }
+        if state.skill_herbs > 0
+            && state.supports.iter().enumerate().any(|(index, support)| {
+                support.owned
+                    && support.ready_at > state.now()
+                    && self.support_is_unlocked(state, index)
+            })
+        {
+            actions.push(available(
+                WallAction::UseSkillHerb,
+                "skill herb can restore support cooldowns",
+            ));
+        }
+        for target in self.data.purchase_candidates() {
+            if !self.is_owned(state, &target)
+                && state.diamonds >= self.data.purchase_price(&target)
+                && self.is_unlocked_for_purchase(state, &target)
+            {
+                actions.push(available(
+                    WallAction::BuyShopItem { target },
+                    "shop item is affordable and unlocked",
+                ));
+            }
+        }
+        for (index, berry) in state.berries.iter().enumerate() {
+            if self.berry_is_unlocked(state, index)
+                && berry.level < self.data.berries[index].max_level
+                && state.coins >= self.berry_upgrade_cost(state, index)
+            {
+                actions.push(available(
+                    WallAction::UpgradeBerry {
+                        berry_id: berry.id.to_string(),
+                    },
+                    "berry upgrade is affordable",
+                ));
+            }
+        }
+        if state.stamina > 0 {
+            actions.push(available(
+                WallAction::Train,
+                "training stamina is available",
+            ));
+        }
+        if state.training_sodas > 0 && state.stamina < state.max_stamina {
+            actions.push(available(
+                WallAction::UseTrainingSoda,
+                "training soda can recover stamina",
+            ));
+        }
+        for (index, berry) in state.berries.iter().enumerate() {
+            if berry.available > 0 && self.berry_is_unlocked(state, index) {
+                for count in 1..=berry.available {
+                    actions.push(available(
+                        WallAction::EatBerries {
+                            berry_id: berry.id.to_string(),
+                            count,
+                        },
+                        "berry is available in the pond",
+                    ));
+                }
+            }
+        }
+        if self.current_competition(state).is_some() {
+            actions.push(available(
+                WallAction::LeagueFight {
+                    intent: LeagueFightIntent::IntentionallyLose,
+                },
+                if self.is_current_league_final_fight(state) {
+                    "league champion fight can be intentionally lost"
+                } else {
+                    "league battle can be entered"
+                },
+            ));
+            if self.expected_jump_clears_current_opponent(state) {
+                actions.push(available(
+                    WallAction::LeagueFight {
+                        intent: LeagueFightIntent::TryWin,
+                    },
+                    "league battle is strategically winnable",
+                ));
+            } else if state.is_magikarp_maxed() {
+                actions.push(available(
+                    WallAction::LeagueFight {
+                        intent: LeagueFightIntent::TryWin,
+                    },
+                    "current Magikarp is max level",
+                ));
+            }
+        }
+        actions
     }
 
-    fn apply_session_action(
+    fn apply_action(
         &self,
         state: &mut GameState,
-        action: WallSessionAction,
+        action: WallAction,
         rng: &mut impl Rng,
-        ctx: &mut PolicySessionState,
-        plan: &PurchasePlan,
-        plan_cursor: &mut usize,
         purchases: &mut Vec<PurchasedItem>,
         action_log: &mut Vec<ActionLogEntry>,
     ) {
         match action {
-            WallSessionAction::CollectGold => {
+            WallAction::CollectHomeTreasure => {
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
                 let before_food = self.total_food_available(state);
@@ -527,7 +643,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::ClaimAchievement => {
+            WallAction::ClaimAchievements => {
                 let before = state.diamonds;
                 let count = state.pending_achievement_claims;
                 self.claim_all_pending_diamond_rewards(state);
@@ -543,7 +659,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::HomeRandomEvent => {
+            WallAction::TriggerHomeEvent => {
                 let before_kp = state.magikarp.kp;
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
@@ -573,25 +689,39 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::UpgradeSupport(index) => {
-                if let Some(cost) = self.next_support_upgrade_cost(state, index) {
-                    if state.candy >= cost {
-                        state.candy -= cost;
-                        state.supports[index].level += 1;
-                        log_event(
-                            action_log,
-                            state,
-                            "upgrade_support",
-                            format!(
-                                "{} to level {} for {} candy",
-                                state.supports[index].name, state.supports[index].level, cost
-                            ),
-                        );
+            WallAction::UpgradeSupport { support_id } => {
+                if let Some(index) = state
+                    .supports
+                    .iter()
+                    .position(|support| support.id == support_id)
+                {
+                    if let Some(cost) = self.next_support_upgrade_cost(state, index) {
+                        if state.candy >= cost {
+                            state.candy -= cost;
+                            state.supports[index].level += 1;
+                            log_event(
+                                action_log,
+                                state,
+                                "upgrade_support",
+                                format!(
+                                    "{} to level {} for {} candy",
+                                    state.supports[index].name, state.supports[index].level, cost
+                                ),
+                            );
+                        }
                     }
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::UseSupport(index) => {
+            WallAction::UseSupport { support_id } => {
+                let Some(index) = state
+                    .supports
+                    .iter()
+                    .position(|support| support.id == support_id)
+                else {
+                    self.advance_minutes(state, 1);
+                    return;
+                };
                 let before_kp = state.magikarp.kp;
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
@@ -611,7 +741,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::UseTrainingSoda => {
+            WallAction::UseTrainingSoda => {
                 if state.training_sodas > 0 && state.stamina < state.max_stamina {
                     state.training_sodas -= 1;
                     state.items_used += 1;
@@ -629,7 +759,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::UseSkillHerb => {
+            WallAction::UseSkillHerb => {
                 if state.skill_herbs > 0 {
                     state.skill_herbs -= 1;
                     state.items_used += 1;
@@ -651,30 +781,32 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::BuyNextPlanItem => {
-                if let Some(target) = plan.targets.get(*plan_cursor) {
-                    let price = self.data.purchase_price(target);
-                    if state.diamonds >= price {
-                        state.diamonds -= price;
-                        self.mark_purchase_owned(state, target);
-                        purchases.push(PurchasedItem {
-                            minute: state.now(),
-                            kind: target.kind.clone(),
-                            id: target.id.clone(),
-                            price_diamonds: price,
-                        });
-                        log_event(
-                            action_log,
-                            state,
-                            "buy",
-                            format!("{:?} {} for {} diamonds", target.kind, target.id, price),
-                        );
-                    }
-                    *plan_cursor += 1;
+            WallAction::BuyShopItem { target } => {
+                let price = self.data.purchase_price(&target);
+                if state.diamonds >= price {
+                    state.diamonds -= price;
+                    self.mark_purchase_owned(state, &target);
+                    purchases.push(PurchasedItem {
+                        minute: state.now(),
+                        kind: target.kind.clone(),
+                        id: target.id.clone(),
+                        price_diamonds: price,
+                    });
+                    log_event(
+                        action_log,
+                        state,
+                        "buy",
+                        format!("{:?} {} for {} diamonds", target.kind, target.id, price),
+                    );
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::UpgradeBerry(index) => {
+            WallAction::UpgradeBerry { berry_id } => {
+                let Some(index) = state.berries.iter().position(|berry| berry.id == berry_id)
+                else {
+                    self.advance_minutes(state, 1);
+                    return;
+                };
                 let cost = self.berry_upgrade_cost(state, index);
                 if state.coins >= cost {
                     state.coins -= cost;
@@ -691,7 +823,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::Train => {
+            WallAction::Train => {
                 let before_kp = state.magikarp.kp;
                 state.stamina = state.stamina.saturating_sub(1);
                 if state.stamina + 1 == state.max_stamina {
@@ -727,11 +859,14 @@ impl<R: Rules> WallTimeSimulator<R> {
                 if let Some(detail) = random_event {
                     log_event(action_log, state, "random_event", detail);
                 }
-                ctx.berries_eaten_before_fight = 0;
-                ctx.ate_rest_after_block = false;
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::EatBerries { index, count } => {
+            WallAction::EatBerries { berry_id, count } => {
+                let Some(index) = state.berries.iter().position(|berry| berry.id == berry_id)
+                else {
+                    self.advance_minutes(state, 1);
+                    return;
+                };
                 let eaten = state.berries[index].available.min(count);
                 if eaten > 0 {
                     let before_kp = state.magikarp.kp;
@@ -740,10 +875,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                     state.magikarp.kp = state.magikarp.kp.saturating_add(kp);
                     state.magikarp.foods_eaten += eaten;
                     self.check_feed_achievements(state);
-                    ctx.berries_eaten_before_fight += eaten;
-                    if count == u32::MAX || ctx.berries_eaten_before_fight >= 3 {
-                        ctx.ate_rest_after_block = true;
-                    }
                     log_event(
                         action_log,
                         state,
@@ -758,7 +889,8 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            WallSessionAction::LeagueFight { intentional_loss } => {
+            WallAction::LeagueFight { intent } => {
+                let intentional_loss = intent == LeagueFightIntent::IntentionallyLose;
                 let before_league = state.league;
                 let before_competition = state.competition;
                 let before_rank = state.player_rank;
@@ -786,8 +918,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                 if let Some(detail) = random_event {
                     log_event(action_log, state, "random_event", detail);
                 }
-                ctx.berries_eaten_before_fight = 0;
-                ctx.ate_rest_after_block = false;
                 self.advance_minutes(state, 1);
             }
         }
@@ -906,10 +1036,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                     * self.league_coin_bonus_permyriad(state) as u64
                     / 10_000,
             );
-            if let Some(done) = state.league_loss_done.get_mut(state.league as usize) {
-                *done = true;
-            }
-            state.must_max_after_intentional_loss = true;
             return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueLoss);
         }
 
@@ -919,9 +1045,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             _ => 12_500_u64,
         };
         let own_jump = state.magikarp.kp * cheer_permyriad as Kp / 10_000;
-        if own_jump >= competition.opponent_jump_cm.value as Kp
-            || (state.must_max_after_intentional_loss && state.is_magikarp_maxed())
-        {
+        if own_jump >= competition.opponent_jump_cm.value as Kp || state.is_magikarp_maxed() {
             let won_league = state.league;
             let won_competition = state.competition;
             state.magikarp.wins += 1;
@@ -953,7 +1077,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                 state.competition = 0;
                 state.max_stamina = state.max_stamina.max(3 + state.player_rank / 2);
                 state.stamina = state.max_stamina;
-                state.must_max_after_intentional_loss = false;
                 self.grant_league_rewards(state);
             }
             return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueWin);
@@ -984,18 +1107,12 @@ impl<R: Rules> WallTimeSimulator<R> {
             .get(state.competition as usize)
     }
 
-    fn should_take_intentional_loss(&self, state: &GameState) -> bool {
-        let Some(league) = self.data.leagues.get(state.league as usize) else {
-            return false;
-        };
-        let loss_done = state
-            .league_loss_done
+    fn is_current_league_final_fight(&self, state: &GameState) -> bool {
+        self.data
+            .leagues
             .get(state.league as usize)
-            .copied()
-            .unwrap_or(false);
-        !loss_done
-            && state.competition + 1 == league.competitions.len() as u32
-            && !state.must_max_after_intentional_loss
+            .map(|league| state.competition + 1 == league.competitions.len() as u32)
+            .unwrap_or(false)
     }
 
     fn expected_jump_clears_current_opponent(&self, state: &GameState) -> bool {
@@ -1585,7 +1702,6 @@ impl<R: Rules> WallTimeSimulator<R> {
     fn random_event_retire_and_fish(&self, state: &mut GameState, rng: &mut impl Rng) {
         state.random_event_retirements = state.random_event_retirements.saturating_add(1);
         state.generation = state.generation.saturating_add(1);
-        state.must_max_after_intentional_loss = false;
         state.magikarp = self.rules.new_magikarp(state, rng);
         self.discover_pattern(state);
         self.check_fished_achievements(state);
@@ -1792,25 +1908,6 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
     }
 
-    fn next_support_upgrade(&self, state: &GameState) -> Option<usize> {
-        state
-            .supports
-            .iter()
-            .enumerate()
-            .filter(|(index, support)| {
-                support.owned
-                    && self.support_is_unlocked(state, *index)
-                    && self
-                        .next_support_upgrade_cost(state, *index)
-                        .is_some_and(|cost| state.candy >= cost)
-            })
-            .min_by_key(|(index, _)| {
-                self.next_support_upgrade_cost(state, *index)
-                    .unwrap_or(u32::MAX)
-            })
-            .map(|(index, _)| index)
-    }
-
     fn next_support_upgrade_cost(&self, state: &GameState, index: usize) -> Option<u32> {
         let current_level = state.supports.get(index)?.level;
         self.data
@@ -1819,22 +1916,6 @@ impl<R: Rules> WallTimeSimulator<R> {
             .upgrade_candy_costs
             .get(current_level.saturating_sub(1) as usize)
             .map(|cost| cost.value)
-    }
-
-    fn can_buy_next_plan_item(
-        &self,
-        state: &GameState,
-        plan: &PurchasePlan,
-        plan_cursor: usize,
-    ) -> bool {
-        let Some(target) = plan.targets.get(plan_cursor) else {
-            return false;
-        };
-        if self.is_owned(state, target) {
-            return true;
-        }
-        state.diamonds >= self.data.purchase_price(target)
-            && self.is_unlocked_for_purchase(state, target)
     }
 
     fn is_unlocked_for_purchase(&self, state: &GameState, target: &PurchaseTarget) -> bool {
@@ -1941,21 +2022,6 @@ impl<R: Rules> WallTimeSimulator<R> {
         self.check_decor_achievements(state);
     }
 
-    fn next_equal_berry_upgrade(&self, state: &GameState) -> Option<usize> {
-        state
-            .berries
-            .iter()
-            .enumerate()
-            .filter(|(index, berry)| {
-                berry.pair_group == "primary_equal"
-                    && self.berry_is_unlocked(state, *index)
-                    && berry.level < self.data.berries[*index].max_level
-                    && state.coins >= self.berry_upgrade_cost(state, *index)
-            })
-            .min_by_key(|(index, berry)| (berry.level, self.berry_upgrade_cost(state, *index)))
-            .map(|(index, _)| index)
-    }
-
     fn berry_upgrade_cost(&self, state: &GameState, index: usize) -> u64 {
         self.data
             .food_upgrade_costs
@@ -1968,16 +2034,6 @@ impl<R: Rules> WallTimeSimulator<R> {
                     .value
                     .saturating_mul(3_u64.pow(state.berries[index].level.saturating_sub(1).min(10)))
             })
-    }
-
-    fn next_berries_to_eat(&self, state: &GameState, wanted: u32) -> Option<(usize, u32)> {
-        state
-            .berries
-            .iter()
-            .enumerate()
-            .filter(|(index, berry)| berry.available > 0 && self.berry_is_unlocked(state, *index))
-            .max_by_key(|(index, _)| self.berry_kp(state, *index))
-            .map(|(index, berry)| (index, berry.available.min(wanted)))
     }
 
     fn berry_kp(&self, state: &GameState, index: usize) -> Kp {
@@ -2272,6 +2328,28 @@ fn summarize_diamond_income(ledger: &[DiamondLedgerEntry]) -> Vec<DiamondIncomeS
     summary
 }
 
+fn available(action: WallAction, reason: &'static str) -> AvailableAction {
+    AvailableAction { action, reason }
+}
+
+fn invalid_policy_action_detail(
+    state: &GameState,
+    action: WallAction,
+    reason: String,
+) -> InvalidPolicyAction {
+    InvalidPolicyAction {
+        minute: state.now(),
+        day: state.clock.day + 1,
+        time: format!(
+            "{:02}:{:02}",
+            state.clock.minute_of_day / 60,
+            state.clock.minute_of_day % 60
+        ),
+        action,
+        reason,
+    }
+}
+
 fn log_event(
     action_log: &mut Vec<ActionLogEntry>,
     state: &GameState,
@@ -2340,8 +2418,8 @@ mod tests {
         let data = GameData::approx_v1();
         let plan = data.preset_plan("balanced");
         let default_result = sim().run(7, plan.clone());
-        let mut policy = ActivePlayerPolicy;
-        let explicit_result = sim().run_with_policy(7, plan, &mut policy);
+        let mut policy = ActivePlayerPolicy::with_purchase_plan(plan);
+        let explicit_result = sim().run_with_policy(7, &mut policy);
         assert_eq!(default_result.wall_days, explicit_result.wall_days);
         assert_eq!(
             default_result.final_state.league,
@@ -2362,8 +2440,8 @@ mod tests {
                 "stop"
             }
 
-            fn decide(&mut self, _view: &PolicyDecisionView<'_>) -> Option<WallSessionAction> {
-                None
+            fn choose_action(&mut self, _context: &DecisionContext<'_>) -> PolicyDecision {
+                PolicyDecision::EndSession
             }
         }
 
@@ -2376,12 +2454,68 @@ mod tests {
         };
         let simulator = WallTimeSimulator::new(ApproxRules, data.clone(), config);
         let mut policy = StopPolicy;
-        let result = simulator.run_with_policy(7, data.preset_plan("balanced"), &mut policy);
+        let result = simulator.run_with_policy(7, &mut policy);
         assert_eq!(result.final_state.action_count, 0);
-        assert!(result
-            .action_log
-            .iter()
-            .all(|entry| entry.event != "train" && entry.event != "eat_berries"));
+        assert!(
+            result
+                .action_log
+                .iter()
+                .all(|entry| entry.event != "train" && entry.event != "eat_berries")
+        );
+    }
+
+    #[test]
+    fn invalid_policy_action_ends_run_with_detail() {
+        struct InvalidPolicy;
+
+        impl WallTimePolicy for InvalidPolicy {
+            fn name(&self) -> &'static str {
+                "invalid"
+            }
+
+            fn choose_action(&mut self, _context: &DecisionContext<'_>) -> PolicyDecision {
+                PolicyDecision::Execute(WallAction::BuyShopItem {
+                    target: PurchaseTarget {
+                        kind: PurchaseKind::Decor,
+                        id: "does_not_exist".to_string(),
+                    },
+                })
+            }
+        }
+
+        let data = GameData::approx_v1();
+        let config = WallSimConfig {
+            max_wall_days: 1,
+            max_actions: 100,
+            max_sessions_per_day: 10,
+            target_league: 4,
+        };
+        let simulator = WallTimeSimulator::new(ApproxRules, data, config);
+        let mut policy = InvalidPolicy;
+        let result = simulator.run_with_policy(7, &mut policy);
+        assert!(matches!(
+            result.outcome,
+            WallRunOutcome::InvalidPolicyAction
+        ));
+        assert!(result.invalid_policy_action.is_some());
+    }
+
+    #[test]
+    fn engine_available_actions_are_validated_actions() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(ApproxRules, data.clone(), WallSimConfig::default());
+        let mut state =
+            simulator.initial_wall_state(&mut rand_chacha::ChaCha8Rng::seed_from_u64(1));
+        simulator.refresh_timers(&mut state);
+        let actions = simulator.available_actions(&state);
+        assert!(!actions.is_empty());
+        for available in &actions {
+            assert!(
+                actions
+                    .iter()
+                    .any(|candidate| candidate.action == available.action)
+            );
+        }
     }
 
     #[test]
@@ -2442,9 +2576,20 @@ mod tests {
     fn one_intentional_loss_per_reached_league() {
         let data = GameData::approx_v1();
         let result = sim().run(3, data.preset_plan("none"));
-        for league in 0..result.final_state.league.min(4) as usize {
-            assert!(result.final_state.league_loss_done[league]);
-        }
+        let intentional_loss_leagues = result
+            .action_log
+            .iter()
+            .filter(|entry| entry.event == "league_loss")
+            .filter_map(|entry| entry.detail.split_once('-'))
+            .filter_map(|(league, _)| league.parse::<u32>().ok())
+            .collect::<std::collections::BTreeSet<_>>();
+        let intentional_losses = result
+            .action_log
+            .iter()
+            .filter(|entry| entry.event == "league_loss")
+            .count();
+        assert_eq!(intentional_losses, intentional_loss_leagues.len());
+        assert!(intentional_losses >= result.final_state.league.min(4) as usize);
     }
 
     #[test]
@@ -2466,10 +2611,11 @@ mod tests {
     fn plan_contains_only_support_and_decor_targets() {
         let data = GameData::approx_v1();
         let plan = data.preset_plan("balanced");
-        assert!(plan
-            .targets
-            .iter()
-            .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor)));
+        assert!(
+            plan.targets
+                .iter()
+                .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor))
+        );
     }
 
     #[test]
@@ -2494,46 +2640,60 @@ mod tests {
         let result = sim().run(42, data.preset_plan("balanced"));
         assert!(result.final_state.pending_diamond_rewards.is_empty());
         assert_eq!(result.final_state.pending_achievement_claims, 0);
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::Tutorial));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::TrainerRank));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::LeagueBattleReward));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::Achievement));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::PatternDiscovery));
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::Tutorial)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::TrainerRank)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::LeagueBattleReward)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::Achievement)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::PatternDiscovery)
+        );
     }
 
     #[test]
     fn feeding_and_training_achievements_do_not_award_diamonds() {
         let data = GameData::approx_v1();
         let result = sim().run(42, data.preset_plan("balanced"));
-        assert!(!result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.detail.starts_with("times fed")));
-        assert!(!result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.detail.starts_with("times trained")));
+        assert!(
+            !result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.detail.starts_with("times fed"))
+        );
+        assert!(
+            !result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.detail.starts_with("times trained"))
+        );
     }
 }
