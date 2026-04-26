@@ -8,6 +8,9 @@ use crate::model::{
     PendingCoinReward, PendingDiamondReward, Provenance, PurchaseKind, PurchasePlan,
     PurchaseTarget, SupportState, WallClock,
 };
+use crate::player_policy::{
+    ActivePlayerPolicy, PolicyDecisionView, PolicySessionState, WallSessionAction, WallTimePolicy,
+};
 use crate::rules::Rules;
 
 #[derive(Clone, Debug)]
@@ -74,28 +77,6 @@ pub struct ActionLogEntry {
     pub detail: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SessionAction {
-    CollectGold,
-    ClaimAchievement,
-    HomeRandomEvent,
-    UpgradeSupport(usize),
-    UseSupport(usize),
-    UseTrainingSoda,
-    UseSkillHerb,
-    BuyNextPlanItem,
-    UpgradeBerry(usize),
-    Train,
-    EatBerries { index: usize, count: u32 },
-    LeagueFight { intentional_loss: bool },
-}
-
-#[derive(Clone, Debug, Default)]
-struct SessionContext {
-    berries_eaten_before_fight: u32,
-    ate_rest_after_block: bool,
-}
-
 pub struct WallTimeSimulator<R> {
     rules: R,
     data: GameData,
@@ -112,6 +93,16 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     pub fn run(&self, seed: u64, plan: PurchasePlan) -> WallSimResult {
+        let mut policy = ActivePlayerPolicy;
+        self.run_with_policy(seed, plan, &mut policy)
+    }
+
+    pub fn run_with_policy<P: WallTimePolicy>(
+        &self,
+        seed: u64,
+        plan: PurchasePlan,
+        policy: &mut P,
+    ) -> WallSimResult {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut state = self.initial_wall_state(&mut rng);
         let mut purchases = Vec::new();
@@ -150,13 +141,16 @@ impl<R: Rules> WallTimeSimulator<R> {
                     state.diamonds
                 ),
             );
-            let mut ctx = SessionContext::default();
+            let mut ctx = policy.begin_session();
             let mut actions_in_session = 0_u32;
 
             loop {
                 self.refresh_timers(&mut state);
-                let Some(action) = self.decide_session_action(&state, &plan, plan_cursor, &ctx)
-                else {
+                let action = {
+                    let view = self.policy_decision_view(&state, &plan, plan_cursor, &ctx);
+                    policy.decide(&view)
+                };
+                let Some(action) = action else {
                     break;
                 };
                 self.apply_session_action(
@@ -397,7 +391,11 @@ impl<R: Rules> WallTimeSimulator<R> {
                 next = next.min(support.ready_at);
             }
         }
-        if next == u64::MAX { now + 60 } else { next }
+        if next == u64::MAX {
+            now + 60
+        } else {
+            next
+        }
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
@@ -448,34 +446,15 @@ impl<R: Rules> WallTimeSimulator<R> {
         (60 / seconds).max(1)
     }
 
-    fn decide_session_action(
+    fn policy_decision_view<'a>(
         &self,
-        state: &GameState,
-        plan: &PurchasePlan,
+        state: &'a GameState,
+        plan: &'a PurchasePlan,
         plan_cursor: usize,
-        ctx: &SessionContext,
-    ) -> Option<SessionAction> {
-        if self.home_treasure_available(state) {
-            return Some(SessionAction::CollectGold);
-        }
-        if state.pending_achievement_claims > 0 {
-            return Some(SessionAction::ClaimAchievement);
-        }
-        if state.home_random_event_ready_at <= state.now() {
-            return Some(SessionAction::HomeRandomEvent);
-        }
-        if self.active_kp_gain_buff_permyriad(state) > 10_000 {
-            if state.stamina > 0 {
-                return Some(SessionAction::Train);
-            }
-            if let Some((index, count)) = self.next_berries_to_eat(state, u32::MAX) {
-                return Some(SessionAction::EatBerries { index, count });
-            }
-        }
-        if let Some(index) = self.next_support_upgrade(state) {
-            return Some(SessionAction::UpgradeSupport(index));
-        }
-        if let Some(index) = state
+        session: &'a PolicySessionState,
+    ) -> PolicyDecisionView<'a> {
+        let needed_berries = 3_u32.saturating_sub(session.berries_eaten_before_fight);
+        let ready_support = state
             .supports
             .iter()
             .enumerate()
@@ -484,76 +463,48 @@ impl<R: Rules> WallTimeSimulator<R> {
                     && support.ready_at <= state.now()
                     && self.support_is_unlocked(state, *i)
             })
-            .map(|(i, _)| i)
-        {
-            return Some(SessionAction::UseSupport(index));
+            .map(|(i, _)| i);
+        let support_on_cooldown = state.supports.iter().enumerate().any(|(i, support)| {
+            support.owned && support.ready_at > state.now() && self.support_is_unlocked(state, i)
+        });
+        PolicyDecisionView {
+            state,
+            plan,
+            plan_cursor,
+            session,
+            home_treasure_available: self.home_treasure_available(state),
+            home_random_event_ready: state.home_random_event_ready_at <= state.now(),
+            kp_gain_buff_active: self.active_kp_gain_buff_permyriad(state) > 10_000,
+            next_support_upgrade: self.next_support_upgrade(state),
+            ready_support,
+            support_on_cooldown,
+            can_buy_next_plan_item: self.can_buy_next_plan_item(state, plan, plan_cursor),
+            next_equal_berry_upgrade: self.next_equal_berry_upgrade(state),
+            next_min_berries_to_eat: (needed_berries > 0)
+                .then(|| self.next_berries_to_eat(state, needed_berries))
+                .flatten(),
+            next_rest_berries_to_eat: self.next_berries_to_eat(state, u32::MAX),
+            should_take_intentional_loss: self.should_take_intentional_loss(state),
+            expected_jump_clears_current_opponent: self
+                .expected_jump_clears_current_opponent(state),
+            forced_league_progress_after_max: state.must_max_after_intentional_loss
+                && state.is_magikarp_maxed(),
         }
-        if state.skill_herbs > 0
-            && state
-                .supports
-                .iter()
-                .enumerate()
-                .any(|(i, support)| {
-                    support.owned
-                        && support.ready_at > state.now()
-                        && self.support_is_unlocked(state, i)
-                })
-        {
-            return Some(SessionAction::UseSkillHerb);
-        }
-        if self.can_buy_next_plan_item(state, plan, plan_cursor) {
-            return Some(SessionAction::BuyNextPlanItem);
-        }
-        if let Some(index) = self.next_equal_berry_upgrade(state) {
-            return Some(SessionAction::UpgradeBerry(index));
-        }
-        if state.stamina > 0 {
-            return Some(SessionAction::Train);
-        }
-        if state.training_sodas > 0 && state.stamina < state.max_stamina {
-            return Some(SessionAction::UseTrainingSoda);
-        }
-        if ctx.berries_eaten_before_fight < 3 {
-            if let Some((index, count)) =
-                self.next_berries_to_eat(state, 3 - ctx.berries_eaten_before_fight)
-            {
-                return Some(SessionAction::EatBerries { index, count });
-            }
-        }
-
-        if self.should_take_intentional_loss(state) {
-            return Some(SessionAction::LeagueFight {
-                intentional_loss: true,
-            });
-        }
-        if self.expected_jump_clears_current_opponent(state)
-            || (state.must_max_after_intentional_loss && state.is_magikarp_maxed())
-        {
-            return Some(SessionAction::LeagueFight {
-                intentional_loss: false,
-            });
-        }
-        if !ctx.ate_rest_after_block {
-            if let Some((index, count)) = self.next_berries_to_eat(state, u32::MAX) {
-                return Some(SessionAction::EatBerries { index, count });
-            }
-        }
-        None
     }
 
     fn apply_session_action(
         &self,
         state: &mut GameState,
-        action: SessionAction,
+        action: WallSessionAction,
         rng: &mut impl Rng,
-        ctx: &mut SessionContext,
+        ctx: &mut PolicySessionState,
         plan: &PurchasePlan,
         plan_cursor: &mut usize,
         purchases: &mut Vec<PurchasedItem>,
         action_log: &mut Vec<ActionLogEntry>,
     ) {
         match action {
-            SessionAction::CollectGold => {
+            WallSessionAction::CollectGold => {
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
                 let before_food = self.total_food_available(state);
@@ -576,7 +527,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            SessionAction::ClaimAchievement => {
+            WallSessionAction::ClaimAchievement => {
                 let before = state.diamonds;
                 let count = state.pending_achievement_claims;
                 self.claim_all_pending_diamond_rewards(state);
@@ -592,7 +543,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            SessionAction::HomeRandomEvent => {
+            WallSessionAction::HomeRandomEvent => {
                 let before_kp = state.magikarp.kp;
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
@@ -622,7 +573,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            SessionAction::UpgradeSupport(index) => {
+            WallSessionAction::UpgradeSupport(index) => {
                 if let Some(cost) = self.next_support_upgrade_cost(state, index) {
                     if state.candy >= cost {
                         state.candy -= cost;
@@ -640,7 +591,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::UseSupport(index) => {
+            WallSessionAction::UseSupport(index) => {
                 let before_kp = state.magikarp.kp;
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
@@ -660,7 +611,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 self.advance_minutes(state, 1);
             }
-            SessionAction::UseTrainingSoda => {
+            WallSessionAction::UseTrainingSoda => {
                 if state.training_sodas > 0 && state.stamina < state.max_stamina {
                     state.training_sodas -= 1;
                     state.items_used += 1;
@@ -678,7 +629,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::UseSkillHerb => {
+            WallSessionAction::UseSkillHerb => {
                 if state.skill_herbs > 0 {
                     state.skill_herbs -= 1;
                     state.items_used += 1;
@@ -700,7 +651,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::BuyNextPlanItem => {
+            WallSessionAction::BuyNextPlanItem => {
                 if let Some(target) = plan.targets.get(*plan_cursor) {
                     let price = self.data.purchase_price(target);
                     if state.diamonds >= price {
@@ -723,7 +674,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::UpgradeBerry(index) => {
+            WallSessionAction::UpgradeBerry(index) => {
                 let cost = self.berry_upgrade_cost(state, index);
                 if state.coins >= cost {
                     state.coins -= cost;
@@ -740,7 +691,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::Train => {
+            WallSessionAction::Train => {
                 let before_kp = state.magikarp.kp;
                 state.stamina = state.stamina.saturating_sub(1);
                 if state.stamina + 1 == state.max_stamina {
@@ -780,7 +731,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 ctx.ate_rest_after_block = false;
                 self.advance_minutes(state, 1);
             }
-            SessionAction::EatBerries { index, count } => {
+            WallSessionAction::EatBerries { index, count } => {
                 let eaten = state.berries[index].available.min(count);
                 if eaten > 0 {
                     let before_kp = state.magikarp.kp;
@@ -807,7 +758,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
-            SessionAction::LeagueFight { intentional_loss } => {
+            WallSessionAction::LeagueFight { intentional_loss } => {
                 let before_league = state.league;
                 let before_competition = state.competition;
                 let before_rank = state.player_rank;
@@ -951,7 +902,8 @@ impl<R: Rules> WallTimeSimulator<R> {
         };
         if intentional_loss {
             state.coins = state.coins.saturating_add(
-                competition.loss_reward_coins.value * self.league_coin_bonus_permyriad(state) as u64
+                competition.loss_reward_coins.value
+                    * self.league_coin_bonus_permyriad(state) as u64
                     / 10_000,
             );
             if let Some(done) = state.league_loss_done.get_mut(state.league as usize) {
@@ -1239,7 +1191,11 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
         let bonus = self.level_up_coin_bonus_permyriad(state) as u64;
         for level in already_claimed + 1..=new_level {
-            let Some(rank) = self.data.magikarp_ranks.iter().find(|rank| rank.rank == level)
+            let Some(rank) = self
+                .data
+                .magikarp_ranks
+                .iter()
+                .find(|rank| rank.rank == level)
             else {
                 continue;
             };
@@ -1396,11 +1352,7 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
     }
 
-    fn increment_random_event_cap(
-        &self,
-        state: &mut GameState,
-        occurrence: RandomEventOccurrence,
-    ) {
+    fn increment_random_event_cap(&self, state: &mut GameState, occurrence: RandomEventOccurrence) {
         match occurrence {
             RandomEventOccurrence::Training => state.training_random_events_today += 1,
             RandomEventOccurrence::LeagueWin => state.league_win_random_events_today += 1,
@@ -1455,7 +1407,10 @@ impl<R: Rules> WallTimeSimulator<R> {
         let Some(slug) = support_slug_from_master_id(master_id) else {
             return false;
         };
-        state.supports.iter().any(|support| support.id == slug && support.owned)
+        state
+            .supports
+            .iter()
+            .any(|support| support.id == slug && support.owned)
     }
 
     fn record_random_event_seen(&self, state: &mut GameState, event_id: u32) {
@@ -1568,10 +1523,10 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn random_event_kp_amount(&self, state: &GameState, percent: u32) -> Kp {
-        let base = state
-            .magikarp
-            .kp
-            .max(self.rules.training_kp(state, crate::rules::TrainingResult::Normal));
+        let base = state.magikarp.kp.max(
+            self.rules
+                .training_kp(state, crate::rules::TrainingResult::Normal),
+        );
         (self
             .apply_magikarp_bonus(state, base.saturating_mul(percent as Kp) / 100)
             .saturating_mul(self.event_kp_bonus_permyriad(state) as Kp)
@@ -1606,7 +1561,9 @@ impl<R: Rules> WallTimeSimulator<R> {
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        let Some(index) = candidates.get(rng.random_range(0..candidates.len().max(1))).copied()
+        let Some(index) = candidates
+            .get(rng.random_range(0..candidates.len().max(1)))
+            .copied()
         else {
             return "none".to_string();
         };
@@ -1731,13 +1688,7 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn check_training_achievements(&self, state: &mut GameState) {
-        for (milestone, amount) in [
-            (5, 11),
-            (30, 20),
-            (200, 150),
-            (600, 2_100),
-            (1_300, 43_000),
-        ] {
+        for (milestone, amount) in [(5, 11), (30, 20), (200, 150), (600, 2_100), (1_300, 43_000)] {
             if state.magikarp.trainings_done >= milestone {
                 self.queue_achievement_coins_once(
                     state,
@@ -2194,12 +2145,13 @@ impl<R: Rules> WallTimeSimulator<R> {
             .iter()
             .enumerate()
             .filter(|(_, decor)| decor.owned)
-            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
-                match self.data.decors[index].effect {
+            .fold(
+                self.coin_bonus_permyriad(state),
+                |acc, (index, _)| match self.data.decors[index].effect {
                     DecorEffect::LeagueCoinPermyriad(mult) => acc * mult / 10_000,
                     _ => acc,
-                }
-            })
+                },
+            )
     }
 
     fn treasure_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
@@ -2208,12 +2160,13 @@ impl<R: Rules> WallTimeSimulator<R> {
             .iter()
             .enumerate()
             .filter(|(_, decor)| decor.owned)
-            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
-                match self.data.decors[index].effect {
+            .fold(
+                self.coin_bonus_permyriad(state),
+                |acc, (index, _)| match self.data.decors[index].effect {
                     DecorEffect::TreasureCoinPermyriad(mult) => acc * mult / 10_000,
                     _ => acc,
-                }
-            })
+                },
+            )
     }
 
     fn level_up_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
@@ -2222,12 +2175,13 @@ impl<R: Rules> WallTimeSimulator<R> {
             .iter()
             .enumerate()
             .filter(|(_, decor)| decor.owned)
-            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
-                match self.data.decors[index].effect {
+            .fold(
+                self.coin_bonus_permyriad(state),
+                |acc, (index, _)| match self.data.decors[index].effect {
                     DecorEffect::LevelUpCoinPermyriad(mult) => acc * mult / 10_000,
                     _ => acc,
-                }
-            })
+                },
+            )
     }
 
     fn active_kp_gain_buff_permyriad(&self, state: &GameState) -> u32 {
@@ -2382,6 +2336,55 @@ mod tests {
     }
 
     #[test]
+    fn default_run_uses_active_player_policy() {
+        let data = GameData::approx_v1();
+        let plan = data.preset_plan("balanced");
+        let default_result = sim().run(7, plan.clone());
+        let mut policy = ActivePlayerPolicy;
+        let explicit_result = sim().run_with_policy(7, plan, &mut policy);
+        assert_eq!(default_result.wall_days, explicit_result.wall_days);
+        assert_eq!(
+            default_result.final_state.league,
+            explicit_result.final_state.league
+        );
+        assert_eq!(
+            default_result.final_state.magikarp.kp,
+            explicit_result.final_state.magikarp.kp
+        );
+    }
+
+    #[test]
+    fn custom_policy_controls_player_decisions() {
+        struct StopPolicy;
+
+        impl WallTimePolicy for StopPolicy {
+            fn name(&self) -> &'static str {
+                "stop"
+            }
+
+            fn decide(&mut self, _view: &PolicyDecisionView<'_>) -> Option<WallSessionAction> {
+                None
+            }
+        }
+
+        let data = GameData::approx_v1();
+        let config = WallSimConfig {
+            max_wall_days: 1,
+            max_actions: 100,
+            max_sessions_per_day: 10,
+            target_league: 4,
+        };
+        let simulator = WallTimeSimulator::new(ApproxRules, data.clone(), config);
+        let mut policy = StopPolicy;
+        let result = simulator.run_with_policy(7, data.preset_plan("balanced"), &mut policy);
+        assert_eq!(result.final_state.action_count, 0);
+        assert!(result
+            .action_log
+            .iter()
+            .all(|entry| entry.event != "train" && entry.event != "eat_berries"));
+    }
+
+    #[test]
     fn sessions_respect_daily_cap() {
         let data = GameData::approx_v1();
         let config = WallSimConfig {
@@ -2463,11 +2466,10 @@ mod tests {
     fn plan_contains_only_support_and_decor_targets() {
         let data = GameData::approx_v1();
         let plan = data.preset_plan("balanced");
-        assert!(
-            plan.targets
-                .iter()
-                .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor))
-        );
+        assert!(plan
+            .targets
+            .iter()
+            .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor)));
     }
 
     #[test]
@@ -2492,60 +2494,46 @@ mod tests {
         let result = sim().run(42, data.preset_plan("balanced"));
         assert!(result.final_state.pending_diamond_rewards.is_empty());
         assert_eq!(result.final_state.pending_achievement_claims, 0);
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::Tutorial)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::TrainerRank)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::LeagueBattleReward)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::Achievement)
-        );
-        assert!(
-            result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.source == DiamondSource::PatternDiscovery)
-        );
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::Tutorial));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::TrainerRank));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::LeagueBattleReward));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::Achievement));
+        assert!(result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.source == DiamondSource::PatternDiscovery));
     }
 
     #[test]
     fn feeding_and_training_achievements_do_not_award_diamonds() {
         let data = GameData::approx_v1();
         let result = sim().run(42, data.preset_plan("balanced"));
-        assert!(
-            !result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.detail.starts_with("times fed"))
-        );
-        assert!(
-            !result
-                .final_state
-                .diamond_ledger
-                .iter()
-                .any(|entry| entry.detail.starts_with("times trained"))
-        );
+        assert!(!result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.detail.starts_with("times fed")));
+        assert!(!result
+            .final_state
+            .diamond_ledger
+            .iter()
+            .any(|entry| entry.detail.starts_with("times trained")));
     }
 }
