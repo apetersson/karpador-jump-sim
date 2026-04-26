@@ -60,6 +60,9 @@ impl Rules for ApproxRules {
             diamonds: 0,
             diamond_ledger: Vec::new(),
             candy: 0,
+            training_sodas: 0,
+            skill_herbs: 0,
+            league_aids: 0,
             stamina: 3,
             max_stamina: 3,
             food_level: 1,
@@ -77,13 +80,23 @@ impl Rules for ApproxRules {
             decors: Vec::new(),
             pending_achievement_claims: 0,
             pending_diamond_rewards: Vec::new(),
+            pending_coin_rewards: Vec::new(),
+            pending_candy_rewards: Vec::new(),
             diamond_achievement_keys: Vec::new(),
             league_wins_total: 0,
             support_skill_uses: 0,
+            items_used: 0,
             random_events_seen: 0,
+            random_event_ids_seen: Vec::new(),
+            random_event_retirements: 0,
+            random_event_day: 0,
+            training_random_events_today: 0,
+            league_win_random_events_today: 0,
+            league_loss_random_events_today: 0,
             discovered_patterns: 0,
             login_days_claimed: 0,
             home_treasure_ready_at: WallClock::SESSION_START as u64,
+            home_random_event_ready_at: WallClock::SESSION_START as u64,
             next_food_spawn_at: WallClock::SESSION_START as u64 + 8,
             next_stamina_at: WallClock::SESSION_START as u64
                 + self.stamina_respawn_minutes() as u64,
@@ -98,6 +111,7 @@ impl Rules for ApproxRules {
                 foods_eaten: 0,
                 trainings_done: 0,
                 wins: 0,
+                level_coin_bonus_claimed_to: 1,
             },
         }
     }
@@ -126,6 +140,7 @@ impl Rules for ApproxRules {
             foods_eaten: 0,
             trainings_done: 0,
             wins: 0,
+            level_coin_bonus_claimed_to: 1,
         }
     }
 
@@ -255,18 +270,15 @@ impl Rules for ApkRules {
             diamonds: 0,
             diamond_ledger: Vec::new(),
             candy: 0,
+            training_sodas: 0,
+            skill_herbs: 0,
+            league_aids: 0,
             stamina: 3,
             max_stamina: 3,
             food_level: 1,
             training_level: 1,
             food_available: 0,
-            max_food: self
-                .data
-                .economy
-                .food_respawn_minutes
-                .value
-                .saturating_add(10)
-                .max(11),
+            max_food: self.data.economy.home_food_max.value,
             league: 0,
             competition: 0,
             league_loss_done: vec![false; self.data.leagues.len()],
@@ -278,13 +290,23 @@ impl Rules for ApkRules {
             decors: Vec::new(),
             pending_achievement_claims: 0,
             pending_diamond_rewards: Vec::new(),
+            pending_coin_rewards: Vec::new(),
+            pending_candy_rewards: Vec::new(),
             diamond_achievement_keys: Vec::new(),
             league_wins_total: 0,
             support_skill_uses: 0,
+            items_used: 0,
             random_events_seen: 0,
+            random_event_ids_seen: Vec::new(),
+            random_event_retirements: 0,
+            random_event_day: 0,
+            training_random_events_today: 0,
+            league_win_random_events_today: 0,
+            league_loss_random_events_today: 0,
             discovered_patterns: 0,
             login_days_claimed: 0,
             home_treasure_ready_at: WallClock::SESSION_START as u64,
+            home_random_event_ready_at: WallClock::SESSION_START as u64,
             next_food_spawn_at: WallClock::SESSION_START as u64
                 + self.data.economy.food_respawn_minutes.value as u64,
             next_stamina_at: WallClock::SESSION_START as u64
@@ -300,6 +322,7 @@ impl Rules for ApkRules {
                 foods_eaten: 0,
                 trainings_done: 0,
                 wins: 0,
+                level_coin_bonus_claimed_to: 1,
             },
         }
     }
@@ -328,6 +351,7 @@ impl Rules for ApkRules {
             foods_eaten: 0,
             trainings_done: 0,
             wins: 0,
+            level_coin_bonus_claimed_to: 1,
         }
     }
 

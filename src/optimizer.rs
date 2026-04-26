@@ -425,7 +425,6 @@ fn beam_plans(
             ));
         }
     }
-
     let prefix_lengths = [
         3_usize,
         5,
@@ -449,6 +448,30 @@ fn beam_plans(
             push_plan_if_new(&mut plans, plan_name, targets);
         }
     }
+    if let Some(core_top5) = select_targets(
+        &candidates,
+        &[
+            "gardevoir",
+            "rowlet",
+            "slowpoke",
+            "parasect_puffballs",
+            "shaymin_planter",
+        ],
+    ) {
+        push_permuted_plans("core-top5-permutation", &core_top5, &mut plans);
+    }
+    if let Some(coin_alt_top5) = select_targets(
+        &candidates,
+        &[
+            "gardevoir",
+            "rowlet",
+            "slowpoke",
+            "parasect_puffballs",
+            "exeggutor_palm",
+        ],
+    ) {
+        push_permuted_plans("coin-alt-top5-permutation", &coin_alt_top5, &mut plans);
+    }
     let mut expensive_top = candidates.clone();
     expensive_top.sort_by_key(|target| std::cmp::Reverse(data.purchase_price(target)));
     expensive_top.truncate(5);
@@ -463,6 +486,14 @@ fn push_plan_if_new(plans: &mut Vec<PurchasePlan>, name: String, targets: Vec<Pu
     {
         plans.push(PurchasePlan { name, targets });
     }
+}
+
+fn select_targets(candidates: &[PurchaseTarget], ids: &[&str]) -> Option<Vec<PurchaseTarget>> {
+    let targets = ids
+        .iter()
+        .map(|id| candidates.iter().find(|target| target.id == *id).cloned())
+        .collect::<Option<Vec<_>>>()?;
+    Some(targets)
 }
 
 fn push_permuted_plans(name: &str, candidates: &[PurchaseTarget], plans: &mut Vec<PurchasePlan>) {

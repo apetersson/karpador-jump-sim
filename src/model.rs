@@ -39,6 +39,9 @@ pub struct GameState {
     pub diamonds: u32,
     pub diamond_ledger: Vec<DiamondLedgerEntry>,
     pub candy: u32,
+    pub training_sodas: u32,
+    pub skill_herbs: u32,
+    pub league_aids: u32,
     pub stamina: u32,
     pub max_stamina: u32,
     pub food_level: u32,
@@ -56,13 +59,23 @@ pub struct GameState {
     pub decors: Vec<DecorState>,
     pub pending_achievement_claims: u32,
     pub pending_diamond_rewards: Vec<PendingDiamondReward>,
+    pub pending_coin_rewards: Vec<PendingCoinReward>,
+    pub pending_candy_rewards: Vec<PendingCandyReward>,
     pub diamond_achievement_keys: Vec<String>,
     pub league_wins_total: u32,
     pub support_skill_uses: u32,
+    pub items_used: u32,
     pub random_events_seen: u32,
+    pub random_event_ids_seen: Vec<u32>,
+    pub random_event_retirements: u32,
+    pub random_event_day: u32,
+    pub training_random_events_today: u32,
+    pub league_win_random_events_today: u32,
+    pub league_loss_random_events_today: u32,
     pub discovered_patterns: u32,
     pub login_days_claimed: u32,
     pub home_treasure_ready_at: u64,
+    pub home_random_event_ready_at: u64,
     pub next_food_spawn_at: u64,
     pub next_stamina_at: u64,
     pub kp_gain_buff_until: u64,
@@ -80,6 +93,7 @@ pub struct MagikarpState {
     pub foods_eaten: u32,
     pub trainings_done: u32,
     pub wins: u32,
+    pub level_coin_bonus_claimed_to: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,6 +109,20 @@ pub struct DiamondLedgerEntry {
 pub struct PendingDiamondReward {
     pub amount: u32,
     pub source: DiamondSource,
+    pub detail: String,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingCoinReward {
+    pub amount: u64,
+    pub detail: String,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingCandyReward {
+    pub amount: u32,
     pub detail: String,
     pub provenance: Provenance,
 }

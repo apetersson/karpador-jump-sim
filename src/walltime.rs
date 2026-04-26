@@ -2,10 +2,11 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
 
-use crate::data::{DecorEffect, GameData, SupportSkill};
+use crate::data::{DecorEffect, GameData, RandomEventData, RandomEventOccurrence, SupportSkill};
 use crate::model::{
-    BerryState, DecorState, DiamondLedgerEntry, DiamondSource, GameState, Kp, PendingDiamondReward,
-    Provenance, PurchaseKind, PurchasePlan, PurchaseTarget, SupportState, WallClock,
+    BerryState, DecorState, DiamondLedgerEntry, DiamondSource, GameState, Kp, PendingCandyReward,
+    PendingCoinReward, PendingDiamondReward, Provenance, PurchaseKind, PurchasePlan,
+    PurchaseTarget, SupportState, WallClock,
 };
 use crate::rules::Rules;
 
@@ -77,8 +78,11 @@ pub struct ActionLogEntry {
 enum SessionAction {
     CollectGold,
     ClaimAchievement,
+    HomeRandomEvent,
     UpgradeSupport(usize),
     UseSupport(usize),
+    UseTrainingSoda,
+    UseSkillHerb,
     BuyNextPlanItem,
     UpgradeBerry(usize),
     Train,
@@ -167,9 +171,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
                 state.action_count += 1;
                 actions_in_session += 1;
-                state.magikarp.level = self
-                    .rules
-                    .level_for_kp(state.magikarp.kp, state.magikarp.max_level);
+                self.update_magikarp_level_and_rewards(&mut state);
 
                 if state.league >= self.config.target_league || actions_in_session > 1_000 {
                     break;
@@ -249,14 +251,24 @@ impl<R: Rules> WallTimeSimulator<R> {
         );
         state.pending_achievement_claims = 0;
         state.pending_diamond_rewards.clear();
+        state.pending_coin_rewards.clear();
+        state.pending_candy_rewards.clear();
         state.diamond_achievement_keys.clear();
         state.league_wins_total = 0;
         state.support_skill_uses = 0;
+        state.items_used = 0;
         state.random_events_seen = 0;
+        state.random_event_ids_seen.clear();
+        state.random_event_retirements = 0;
+        state.random_event_day = state.clock.day;
+        state.training_random_events_today = 0;
+        state.league_win_random_events_today = 0;
+        state.league_loss_random_events_today = 0;
         state.discovered_patterns = 0;
         state.login_days_claimed = 0;
         state.league_loss_done = vec![false; self.data.leagues.len()];
         state.home_treasure_ready_at = state.now();
+        state.home_random_event_ready_at = state.now();
         state.next_food_spawn_at =
             state.now() + self.data.economy.food_respawn_minutes.value as u64;
         state.next_stamina_at =
@@ -376,7 +388,10 @@ impl<R: Rules> WallTimeSimulator<R> {
         if state.stamina < state.max_stamina {
             next = next.min(state.next_stamina_at);
         }
-        next = next.min(state.home_treasure_ready_at);
+        if state.player_rank >= 2 {
+            next = next.min(state.home_treasure_ready_at);
+        }
+        next = next.min(state.home_random_event_ready_at);
         for (i, support) in state.supports.iter().enumerate() {
             if support.owned && self.support_is_unlocked(state, i) {
                 next = next.min(support.ready_at);
@@ -386,7 +401,8 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
-        state.home_treasure_ready_at <= state.now()
+        self.home_treasure_available(state)
+            || state.home_random_event_ready_at <= state.now()
             || state.pending_achievement_claims > 0
             || state.stamina > 0
             || state
@@ -403,16 +419,18 @@ impl<R: Rules> WallTimeSimulator<R> {
             })
     }
 
+    fn home_treasure_available(&self, state: &GameState) -> bool {
+        state.player_rank >= 2 && state.home_treasure_ready_at <= state.now()
+    }
+
     fn refresh_timers(&self, state: &mut GameState) {
+        self.refresh_random_event_day(state);
         let now = state.now();
         let food_respawn = self.data.economy.food_respawn_minutes.value as u64;
         while state.next_food_spawn_at <= now && self.total_food_available(state) < state.max_food {
             for _ in 0..self.food_spawns_per_minute_tick() {
-                if self.total_food_available(state) >= state.max_food {
+                if self.add_home_food(state, 1, true) == 0 {
                     break;
-                }
-                if let Some(index) = self.next_food_spawn_index(state) {
-                    state.berries[index].available += 1;
                 }
             }
             state.next_food_spawn_at += food_respawn.max(1);
@@ -437,11 +455,14 @@ impl<R: Rules> WallTimeSimulator<R> {
         plan_cursor: usize,
         ctx: &SessionContext,
     ) -> Option<SessionAction> {
-        if state.home_treasure_ready_at <= state.now() {
+        if self.home_treasure_available(state) {
             return Some(SessionAction::CollectGold);
         }
         if state.pending_achievement_claims > 0 {
             return Some(SessionAction::ClaimAchievement);
+        }
+        if state.home_random_event_ready_at <= state.now() {
+            return Some(SessionAction::HomeRandomEvent);
         }
         if self.active_kp_gain_buff_permyriad(state) > 10_000 {
             if state.stamina > 0 {
@@ -467,6 +488,19 @@ impl<R: Rules> WallTimeSimulator<R> {
         {
             return Some(SessionAction::UseSupport(index));
         }
+        if state.skill_herbs > 0
+            && state
+                .supports
+                .iter()
+                .enumerate()
+                .any(|(i, support)| {
+                    support.owned
+                        && support.ready_at > state.now()
+                        && self.support_is_unlocked(state, i)
+                })
+        {
+            return Some(SessionAction::UseSkillHerb);
+        }
         if self.can_buy_next_plan_item(state, plan, plan_cursor) {
             return Some(SessionAction::BuyNextPlanItem);
         }
@@ -475,6 +509,9 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
         if state.stamina > 0 {
             return Some(SessionAction::Train);
+        }
+        if state.training_sodas > 0 && state.stamina < state.max_stamina {
+            return Some(SessionAction::UseTrainingSoda);
         }
         if ctx.berries_eaten_before_fight < 3 {
             if let Some((index, count)) =
@@ -519,13 +556,9 @@ impl<R: Rules> WallTimeSimulator<R> {
             SessionAction::CollectGold => {
                 let before_coins = state.coins;
                 let before_diamonds = state.diamonds;
-                let coin_bonus = self.coin_bonus_permyriad(state);
-                let coins = self.data.economy.home_treasure_base_coins.value
-                    * (1 + state.player_rank as u64)
-                    * coin_bonus as u64
-                    / 10_000;
-                state.coins = state.coins.saturating_add(coins);
-                self.maybe_grant_sunken_treasure_diamonds(state, rng, "home sunken treasure");
+                let before_food = self.total_food_available(state);
+                let before_sodas = state.training_sodas;
+                let treasure_detail = self.collect_home_treasure(state, rng);
                 state.home_treasure_ready_at =
                     state.now() + self.data.economy.home_treasure_cooldown_minutes.value as u64;
                 log_event(
@@ -533,16 +566,19 @@ impl<R: Rules> WallTimeSimulator<R> {
                     state,
                     "collect_gold",
                     format!(
-                        "+{} coins, +{} diamonds",
+                        "{}; +{} coins, +{} diamonds, +{} berries, +{} training soda",
+                        treasure_detail,
                         state.coins.saturating_sub(before_coins),
-                        state.diamonds.saturating_sub(before_diamonds)
+                        state.diamonds.saturating_sub(before_diamonds),
+                        self.total_food_available(state).saturating_sub(before_food),
+                        state.training_sodas.saturating_sub(before_sodas)
                     ),
                 );
                 self.advance_minutes(state, 1);
             }
             SessionAction::ClaimAchievement => {
                 let before = state.diamonds;
-                let count = state.pending_diamond_rewards.len();
+                let count = state.pending_achievement_claims;
                 self.claim_all_pending_diamond_rewards(state);
                 log_event(
                     action_log,
@@ -553,6 +589,36 @@ impl<R: Rules> WallTimeSimulator<R> {
                         count,
                         state.diamonds.saturating_sub(before)
                     ),
+                );
+                self.advance_minutes(state, 1);
+            }
+            SessionAction::HomeRandomEvent => {
+                let before_kp = state.magikarp.kp;
+                let before_coins = state.coins;
+                let before_diamonds = state.diamonds;
+                let before_candy = state.candy;
+                let event_detail =
+                    self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::Home);
+                let cooldown = self
+                    .data
+                    .random_event_parameters
+                    .home_cooldown_minutes
+                    .value
+                    .max(1) as u64;
+                state.home_random_event_ready_at = state.now() + cooldown;
+                log_event(
+                    action_log,
+                    state,
+                    "home_random_event",
+                    event_detail.unwrap_or_else(|| {
+                        format!(
+                            "no event; +{} kp, +{} coins, +{} diamonds, +{} candy",
+                            state.magikarp.kp.saturating_sub(before_kp),
+                            state.coins.saturating_sub(before_coins),
+                            state.diamonds.saturating_sub(before_diamonds),
+                            state.candy.saturating_sub(before_candy)
+                        )
+                    }),
                 );
                 self.advance_minutes(state, 1);
             }
@@ -592,6 +658,46 @@ impl<R: Rules> WallTimeSimulator<R> {
                         state.diamonds.saturating_sub(before_diamonds)
                     ),
                 );
+                self.advance_minutes(state, 1);
+            }
+            SessionAction::UseTrainingSoda => {
+                if state.training_sodas > 0 && state.stamina < state.max_stamina {
+                    state.training_sodas -= 1;
+                    state.items_used += 1;
+                    state.stamina = (state.stamina + 1).min(state.max_stamina);
+                    self.check_item_use_achievements(state);
+                    log_event(
+                        action_log,
+                        state,
+                        "use_item",
+                        format!(
+                            "Training Soda: stamina {}/{}",
+                            state.stamina, state.max_stamina
+                        ),
+                    );
+                }
+                self.advance_minutes(state, 1);
+            }
+            SessionAction::UseSkillHerb => {
+                if state.skill_herbs > 0 {
+                    state.skill_herbs -= 1;
+                    state.items_used += 1;
+                    self.check_item_use_achievements(state);
+                    let now = state.now();
+                    let mut restored = 0_u32;
+                    for support in &mut state.supports {
+                        if support.owned && support.ready_at > now {
+                            support.ready_at = now;
+                            restored += 1;
+                        }
+                    }
+                    log_event(
+                        action_log,
+                        state,
+                        "use_item",
+                        format!("Skill Herb: restored {} support cooldowns", restored),
+                    );
+                }
                 self.advance_minutes(state, 1);
             }
             SessionAction::BuyNextPlanItem => {
@@ -651,7 +757,8 @@ impl<R: Rules> WallTimeSimulator<R> {
                     / 10_000;
                 state.magikarp.kp = state.magikarp.kp.saturating_add(gained);
                 state.magikarp.trainings_done += 1;
-                self.maybe_trigger_random_event(state, rng, "training");
+                let random_event =
+                    self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::Training);
                 self.check_training_achievements(state);
                 log_event(
                     action_log,
@@ -666,6 +773,9 @@ impl<R: Rules> WallTimeSimulator<R> {
                         state.max_stamina
                     ),
                 );
+                if let Some(detail) = random_event {
+                    log_event(action_log, state, "random_event", detail);
+                }
                 ctx.berries_eaten_before_fight = 0;
                 ctx.ate_rest_after_block = false;
                 self.advance_minutes(state, 1);
@@ -702,7 +812,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 let before_competition = state.competition;
                 let before_rank = state.player_rank;
                 let before_diamonds = state.diamonds;
-                self.league_fight(state, intentional_loss, rng);
+                let random_event = self.league_fight(state, intentional_loss, rng);
                 log_event(
                     action_log,
                     state,
@@ -722,6 +832,9 @@ impl<R: Rules> WallTimeSimulator<R> {
                         state.diamonds.saturating_sub(before_diamonds)
                     ),
                 );
+                if let Some(detail) = random_event {
+                    log_event(action_log, state, "random_event", detail);
+                }
                 ctx.berries_eaten_before_fight = 0;
                 ctx.ate_rest_after_block = false;
                 self.advance_minutes(state, 1);
@@ -743,7 +856,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             SupportSkill::KpFlat { base } => {
                 let gain = support_param.unwrap_or(base)
                     * (1 + state.player_rank as Kp)
-                    * self.kp_bonus_permyriad(state) as Kp
+                    * self.skill_kp_bonus_permyriad(state) as Kp
                     * self.active_kp_gain_buff_permyriad(state) as Kp
                     / 10_000
                     / 10_000
@@ -771,14 +884,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 );
             }
             SupportSkill::Food { amount } => {
-                let mut remaining = support_param.unwrap_or(amount as Kp) as u32;
-                while remaining > 0 && self.total_food_available(state) < state.max_food {
-                    let Some(spawn_index) = self.next_food_spawn_index(state) else {
-                        break;
-                    };
-                    state.berries[spawn_index].available += 1;
-                    remaining -= 1;
-                }
+                self.add_home_food(state, support_param.unwrap_or(amount as Kp) as u32, false);
             }
             SupportSkill::Item { base_coin_value } => {
                 if rng.random_range(0..10_000)
@@ -818,7 +924,9 @@ impl<R: Rules> WallTimeSimulator<R> {
                 let (_, base_gain) = self.training_base_gain(state, rng);
                 let gain = self
                     .training_result_gain(base_gain, crate::rules::TrainingResult::Great)
+                    * self.skill_kp_bonus_permyriad(state) as Kp
                     * self.active_kp_gain_buff_permyriad(state) as Kp
+                    / 10_000
                     / 10_000;
                 state.magikarp.kp = state.magikarp.kp.saturating_add(gain);
             }
@@ -832,27 +940,31 @@ impl<R: Rules> WallTimeSimulator<R> {
         state.supports[index].ready_at = state.now() + support_data.cooldown_minutes.value as u64;
     }
 
-    fn league_fight(&self, state: &mut GameState, intentional_loss: bool, rng: &mut impl Rng) {
+    fn league_fight(
+        &self,
+        state: &mut GameState,
+        intentional_loss: bool,
+        rng: &mut impl Rng,
+    ) -> Option<String> {
         let Some(competition) = self.current_competition(state).cloned() else {
-            return;
+            return None;
         };
         if intentional_loss {
             state.coins = state.coins.saturating_add(
-                competition.loss_reward_coins.value * self.coin_bonus_permyriad(state) as u64
+                competition.loss_reward_coins.value * self.league_coin_bonus_permyriad(state) as u64
                     / 10_000,
             );
             if let Some(done) = state.league_loss_done.get_mut(state.league as usize) {
                 *done = true;
             }
             state.must_max_after_intentional_loss = true;
-            self.maybe_trigger_random_event(state, rng, "intentional league loss");
-            return;
+            return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueLoss);
         }
 
         let cheer_permyriad = match rng.random_range(0..100) {
-            0..=74 => 10_000_u64,
-            75..=94 => 11_500_u64,
-            _ => 13_000_u64,
+            0..=49 => 10_000_u64,
+            50..=89 => 10_500_u64,
+            _ => 12_500_u64,
         };
         let own_jump = state.magikarp.kp * cheer_permyriad as Kp / 10_000;
         if own_jump >= competition.opponent_jump_cm.value as Kp
@@ -862,8 +974,9 @@ impl<R: Rules> WallTimeSimulator<R> {
             let won_competition = state.competition;
             state.magikarp.wins += 1;
             state.league_wins_total += 1;
+            self.check_competition_win_achievements(state);
             state.coins = state.coins.saturating_add(
-                competition.win_reward_coins.value * self.coin_bonus_permyriad(state) as u64
+                competition.win_reward_coins.value * self.league_coin_bonus_permyriad(state) as u64
                     / 10_000,
             );
             self.credit_diamonds(
@@ -891,10 +1004,12 @@ impl<R: Rules> WallTimeSimulator<R> {
                 state.must_max_after_intentional_loss = false;
                 self.grant_league_rewards(state);
             }
-            self.maybe_trigger_random_event(state, rng, "league win");
+            return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueWin);
         } else if state.is_magikarp_maxed() {
-            let xp = self.rules.retirement_rank_xp(state);
-            self.increase_trainer_exp(state, xp as u128, "retirement xp".to_string());
+            let xp = self.rules.retirement_rank_xp(state) as u128
+                * self.trainer_exp_bonus_permyriad(state) as u128
+                / 10_000;
+            self.increase_trainer_exp(state, xp, "retirement xp".to_string());
             state.retirements += 1;
             state.generation += 1;
             state.magikarp = self.rules.new_magikarp(state, rng);
@@ -906,6 +1021,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             }
             state.stamina = state.max_stamina;
         }
+        None
     }
 
     fn current_competition(&self, state: &GameState) -> Option<&crate::data::CompetitionData> {
@@ -966,8 +1082,7 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn claim_all_pending_diamond_rewards(&self, state: &mut GameState) {
-        let rewards = std::mem::take(&mut state.pending_diamond_rewards);
-        for reward in rewards {
+        for reward in std::mem::take(&mut state.pending_diamond_rewards) {
             self.credit_diamonds(
                 state,
                 reward.amount,
@@ -976,7 +1091,19 @@ impl<R: Rules> WallTimeSimulator<R> {
                 reward.provenance,
             );
         }
+        for reward in std::mem::take(&mut state.pending_coin_rewards) {
+            state.coins = state.coins.saturating_add(reward.amount);
+        }
+        for reward in std::mem::take(&mut state.pending_candy_rewards) {
+            state.candy = state.candy.saturating_add(reward.amount);
+        }
         state.pending_achievement_claims = 0;
+    }
+
+    fn sync_pending_achievement_claims(&self, state: &mut GameState) {
+        state.pending_achievement_claims = (state.pending_diamond_rewards.len()
+            + state.pending_coin_rewards.len()
+            + state.pending_candy_rewards.len()) as u32;
     }
 
     fn queue_achievement_diamonds_once(
@@ -996,7 +1123,71 @@ impl<R: Rules> WallTimeSimulator<R> {
             detail,
             provenance: self.data.economy.achievement_diamonds_small.provenance,
         });
-        state.pending_achievement_claims = state.pending_diamond_rewards.len() as u32;
+        self.sync_pending_achievement_claims(state);
+        self.check_completed_achievement_milestones(state);
+    }
+
+    fn queue_achievement_coins_once(
+        &self,
+        state: &mut GameState,
+        key: String,
+        amount: u64,
+        detail: String,
+    ) {
+        if state.diamond_achievement_keys.contains(&key) {
+            return;
+        }
+        state.diamond_achievement_keys.push(key);
+        state.pending_coin_rewards.push(PendingCoinReward {
+            amount,
+            detail,
+            provenance: Provenance::Asset,
+        });
+        self.sync_pending_achievement_claims(state);
+        self.check_completed_achievement_milestones(state);
+    }
+
+    fn queue_achievement_candy_once(
+        &self,
+        state: &mut GameState,
+        key: String,
+        amount: u32,
+        detail: String,
+    ) {
+        if state.diamond_achievement_keys.contains(&key) {
+            return;
+        }
+        state.diamond_achievement_keys.push(key);
+        state.pending_candy_rewards.push(PendingCandyReward {
+            amount,
+            detail,
+            provenance: Provenance::Asset,
+        });
+        self.sync_pending_achievement_claims(state);
+        self.check_completed_achievement_milestones(state);
+    }
+
+    fn check_completed_achievement_milestones(&self, state: &mut GameState) {
+        let completed = state
+            .diamond_achievement_keys
+            .iter()
+            .filter(|key| !key.starts_with("complete-count:"))
+            .count() as u32;
+        for (milestone, amount) in [(10, 25), (21, 25), (34, 25), (48, 25), (64, 50)] {
+            if completed >= milestone {
+                let key = format!("complete-count:{milestone}");
+                if !state.diamond_achievement_keys.contains(&key) {
+                    state.diamond_achievement_keys.push(key);
+                    state.pending_diamond_rewards.push(PendingDiamondReward {
+                        amount,
+                        source: DiamondSource::Achievement,
+                        detail: format!("total achievements completed {milestone}"),
+                        provenance: self.data.economy.achievement_diamonds_small.provenance,
+                    });
+                    self.sync_pending_achievement_claims(state);
+                }
+            }
+        }
     }
 
     fn record_daily_login(&self, state: &mut GameState) {
@@ -1037,6 +1228,29 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
     }
 
+    fn update_magikarp_level_and_rewards(&self, state: &mut GameState) {
+        let new_level = self
+            .rules
+            .level_for_kp(state.magikarp.kp, state.magikarp.max_level);
+        state.magikarp.level = new_level;
+        let already_claimed = state.magikarp.level_coin_bonus_claimed_to;
+        if new_level <= already_claimed {
+            return;
+        }
+        let bonus = self.level_up_coin_bonus_permyriad(state) as u64;
+        for level in already_claimed + 1..=new_level {
+            let Some(rank) = self.data.magikarp_ranks.iter().find(|rank| rank.rank == level)
+            else {
+                continue;
+            };
+            let amount = rank.level_up_coins.value.saturating_mul(bonus) / 10_000;
+            if amount > 0 {
+                state.coins = state.coins.saturating_add(amount);
+            }
+        }
+        state.magikarp.level_coin_bonus_claimed_to = new_level;
+    }
+
     fn grant_league_battle_diamonds_if_due(&self, state: &mut GameState) {
         if state.league_wins_total == 0 || state.league_wins_total % 5 != 0 {
             return;
@@ -1062,7 +1276,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             format!("new pattern #{}", state.discovered_patterns),
             self.data.economy.pattern_discovery_diamonds.provenance,
         );
-        for milestone in [3, 10, 20, 30, 40] {
+        for milestone in [2, 5, 10, 18, 29] {
             if state.discovered_patterns >= milestone {
                 self.queue_achievement_diamonds_once(
                     state,
@@ -1074,70 +1288,465 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
     }
 
-    fn maybe_trigger_random_event(&self, state: &mut GameState, rng: &mut impl Rng, trigger: &str) {
-        let training_event_bonus = self.training_event_bonus_permyriad(state);
-        let chance = self
-            .data
-            .economy
-            .random_event_diamond_chance_permyriad
-            .value
-            .saturating_mul(training_event_bonus)
-            / 10_000;
-        if rng.random_range(0..10_000) >= chance {
+    fn maybe_trigger_random_event(
+        &self,
+        state: &mut GameState,
+        rng: &mut impl Rng,
+        occurrence: RandomEventOccurrence,
+    ) -> Option<String> {
+        self.refresh_random_event_day(state);
+        if !self.random_event_cap_allows(state, occurrence) {
+            return None;
+        }
+        let chance = self.random_event_chance_permyriad(state, occurrence);
+        if chance == 0 || rng.random_range(0..10_000) >= chance {
+            return None;
+        }
+        let event = self.choose_random_event(state, occurrence, rng)?;
+        self.increment_random_event_cap(state, occurrence);
+        self.record_random_event_seen(state, event.id);
+
+        let risk_reward = event.success_bonus_type != 0 && event.success_chance_permyriad > 0;
+        let retirement_risk = matches!(event.penalty_type, 1 | 3 | 4);
+        let mut branch = "normal";
+        let detail = if event.id == 1002 {
+            self.fill_home_food(state)
+        } else if risk_reward && !retirement_risk {
+            if rng.random_range(0..10_000) < event.success_chance_permyriad {
+                branch = "success";
+                self.apply_random_event_effect(
+                    state,
+                    rng,
+                    event.success_bonus_type,
+                    event.success_bonus_num,
+                    false,
+                )
+            } else {
+                branch = "failed";
+                self.apply_random_event_effect(
+                    state,
+                    rng,
+                    event.penalty_type,
+                    event.penalty_num,
+                    true,
+                )
+            }
+        } else {
+            if risk_reward && retirement_risk {
+                branch = "safe";
+            }
+            self.apply_random_event_effect(state, rng, event.bonus_type, event.bonus_num, false)
+        };
+
+        Some(format!(
+            "{} #{}: {} ({branch}, {:?})",
+            event.name, event.id, detail, occurrence
+        ))
+    }
+
+    fn refresh_random_event_day(&self, state: &mut GameState) {
+        if state.random_event_day == state.clock.day {
             return;
         }
-        state.random_events_seen += 1;
-        self.credit_diamonds(
-            state,
-            self.data.economy.random_event_diamonds.value,
-            DiamondSource::RandomEncounter,
-            format!("diamond random encounter after {trigger}"),
-            self.data.economy.random_event_diamonds.provenance,
-        );
-        for milestone in [3, 10, 20, 34] {
+        state.random_event_day = state.clock.day;
+        state.training_random_events_today = 0;
+        state.league_win_random_events_today = 0;
+        state.league_loss_random_events_today = 0;
+    }
+
+    fn random_event_chance_permyriad(
+        &self,
+        state: &GameState,
+        occurrence: RandomEventOccurrence,
+    ) -> u32 {
+        let params = &self.data.random_event_parameters;
+        let base = match occurrence {
+            RandomEventOccurrence::Training => params.training_chance_permyriad.value,
+            RandomEventOccurrence::LeagueWin => params.league_win_chance_permyriad.value,
+            RandomEventOccurrence::LeagueLoss => params.league_loss_chance_permyriad.value,
+            RandomEventOccurrence::Home => params.home_chance_permyriad.value,
+        };
+        let bonus = match occurrence {
+            RandomEventOccurrence::Training => self.training_event_bonus_permyriad(state),
+            RandomEventOccurrence::LeagueWin | RandomEventOccurrence::LeagueLoss => {
+                self.league_event_bonus_permyriad(state)
+            }
+            RandomEventOccurrence::Home => 10_000,
+        };
+        base.saturating_mul(bonus).min(100_000_000) / 10_000
+    }
+
+    fn random_event_cap_allows(
+        &self,
+        state: &GameState,
+        occurrence: RandomEventOccurrence,
+    ) -> bool {
+        let params = &self.data.random_event_parameters;
+        match occurrence {
+            RandomEventOccurrence::Training => {
+                state.training_random_events_today < params.training_max_per_day.value
+            }
+            RandomEventOccurrence::LeagueWin => {
+                state.league_win_random_events_today < params.league_win_max_per_day.value
+            }
+            RandomEventOccurrence::LeagueLoss => {
+                state.league_loss_random_events_today < params.league_loss_max_per_day.value
+            }
+            RandomEventOccurrence::Home => state.home_random_event_ready_at <= state.now(),
+        }
+    }
+
+    fn increment_random_event_cap(
+        &self,
+        state: &mut GameState,
+        occurrence: RandomEventOccurrence,
+    ) {
+        match occurrence {
+            RandomEventOccurrence::Training => state.training_random_events_today += 1,
+            RandomEventOccurrence::LeagueWin => state.league_win_random_events_today += 1,
+            RandomEventOccurrence::LeagueLoss => state.league_loss_random_events_today += 1,
+            RandomEventOccurrence::Home => {}
+        }
+    }
+
+    fn choose_random_event(
+        &self,
+        state: &GameState,
+        occurrence: RandomEventOccurrence,
+        rng: &mut impl Rng,
+    ) -> Option<RandomEventData> {
+        let eligible = self
+            .data
+            .random_events
+            .iter()
+            .filter(|event| event.occurrence == occurrence)
+            .filter(|event| self.random_event_is_eligible(state, event))
+            .collect::<Vec<_>>();
+        let total_weight = eligible.iter().map(|event| event.freq).sum::<u32>();
+        if total_weight == 0 {
+            return None;
+        }
+        let mut roll = rng.random_range(0..total_weight);
+        for event in eligible {
+            if roll < event.freq {
+                return Some(event.clone());
+            }
+            roll -= event.freq;
+        }
+        None
+    }
+
+    fn random_event_is_eligible(&self, state: &GameState, event: &RandomEventData) -> bool {
+        if event.need_league_id > 0 && state.league + 1 < event.need_league_id {
+            return false;
+        }
+        if event.need_generation > 0 && state.generation < event.need_generation {
+            return false;
+        }
+        if event.need_support_pokemon_id > 0
+            && !self.support_owned_by_master_id(state, event.need_support_pokemon_id)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn support_owned_by_master_id(&self, state: &GameState, master_id: u32) -> bool {
+        let Some(slug) = support_slug_from_master_id(master_id) else {
+            return false;
+        };
+        state.supports.iter().any(|support| support.id == slug && support.owned)
+    }
+
+    fn record_random_event_seen(&self, state: &mut GameState, event_id: u32) {
+        if !state.random_event_ids_seen.contains(&event_id) {
+            state.random_event_ids_seen.push(event_id);
+            state.random_events_seen = state.random_event_ids_seen.len() as u32;
+        }
+        for milestone in [3, 10, 17, 26, 39] {
             if state.random_events_seen >= milestone {
                 self.queue_achievement_diamonds_once(
                     state,
                     format!("events:{milestone}"),
                     self.data.economy.achievement_diamonds_minor.value,
-                    format!("events triggered {milestone}"),
+                    format!("random events collected {milestone}"),
                 );
             }
         }
     }
 
-    fn maybe_grant_sunken_treasure_diamonds(
+    fn apply_random_event_effect(
         &self,
         state: &mut GameState,
         rng: &mut impl Rng,
-        detail: &str,
-    ) {
-        if rng.random_range(0..10_000)
-            >= self
-                .data
-                .economy
-                .sunken_treasure_diamond_chance_permyriad
-                .value
-        {
-            return;
+        effect_type: u32,
+        effect_num: u32,
+        penalty: bool,
+    ) -> String {
+        match effect_type {
+            _ if penalty && matches!(effect_type, 1 | 3 | 4) => {
+                self.random_event_retire_and_fish(state, rng);
+                "event retirement; new Magikarp fished".to_string()
+            }
+            0 => "kein Ressourceneffekt".to_string(),
+            1 => {
+                let amount = effect_num.max(1);
+                state.magikarp.max_level = state.magikarp.max_level.saturating_add(amount);
+                format!("max level +{amount}")
+            }
+            2 => {
+                let amount = self.random_event_kp_amount(state, effect_num);
+                if penalty {
+                    state.magikarp.kp = state.magikarp.kp.saturating_sub(amount);
+                    format!("KP -{amount}")
+                } else {
+                    state.magikarp.kp = state.magikarp.kp.saturating_add(amount);
+                    format!("KP +{amount}")
+                }
+            }
+            3 => {
+                let amount = self.random_event_coin_amount(state, effect_num);
+                if penalty {
+                    state.coins = state.coins.saturating_sub(amount);
+                    format!("coins -{amount}")
+                } else {
+                    state.coins = state.coins.saturating_add(amount);
+                    format!("coins +{amount}")
+                }
+            }
+            4 => {
+                state.candy = state.candy.saturating_add(effect_num);
+                format!("Pokédrops +{effect_num}")
+            }
+            5 => {
+                if penalty {
+                    let amount = self.random_event_coin_amount(state, effect_num);
+                    state.coins = state.coins.saturating_sub(amount);
+                    format!("coins -{amount}")
+                } else {
+                    state.stamina = state.max_stamina;
+                    "training points full".to_string()
+                }
+            }
+            6 => {
+                let amount = effect_num.max(1);
+                state.stamina = (state.stamina + amount).min(state.max_stamina);
+                format!("training points +{amount}")
+            }
+            7 | 10 => {
+                let restored = self.refresh_random_support_skill(state, rng);
+                format!("support cooldown restored: {restored}")
+            }
+            8 => "nicht modellierter Spezialeffekt type 8".to_string(),
+            9 => {
+                self.credit_diamonds(
+                    state,
+                    effect_num,
+                    DiamondSource::RandomEncounter,
+                    "random event diamond reward".to_string(),
+                    Provenance::Asset,
+                );
+                format!("diamonds +{effect_num}")
+            }
+            101 => {
+                let amount = effect_num.max(1);
+                state.training_sodas = state.training_sodas.saturating_add(amount);
+                format!("Training Soda +{amount}")
+            }
+            102 | 104 => {
+                let amount = effect_num.max(1);
+                state.skill_herbs = state.skill_herbs.saturating_add(amount);
+                format!("Skill Herb +{amount}")
+            }
+            103 => {
+                let amount = effect_num.max(1);
+                state.league_aids = state.league_aids.saturating_add(amount);
+                format!("League Aid +{amount}")
+            }
+            _ => format!("nicht modellierter Effekt type {effect_type} num {effect_num}"),
         }
-        self.credit_diamonds(
-            state,
-            self.data.economy.sunken_treasure_diamonds.value,
-            DiamondSource::SunkenTreasure,
-            detail.to_string(),
-            self.data.economy.sunken_treasure_diamonds.provenance,
-        );
+    }
+
+    fn random_event_kp_amount(&self, state: &GameState, percent: u32) -> Kp {
+        let base = state
+            .magikarp
+            .kp
+            .max(self.rules.training_kp(state, crate::rules::TrainingResult::Normal));
+        (self
+            .apply_magikarp_bonus(state, base.saturating_mul(percent as Kp) / 100)
+            .saturating_mul(self.event_kp_bonus_permyriad(state) as Kp)
+            / 10_000)
+            .max(1)
+    }
+
+    fn random_event_coin_amount(&self, state: &GameState, percent: u32) -> u64 {
+        let bonus = self
+            .coin_bonus_permyriad(state)
+            .saturating_mul(self.event_coin_bonus_permyriad(state))
+            / 10_000;
+        self.data
+            .economy
+            .home_treasure_base_coins
+            .value
+            .saturating_mul(1 + state.player_rank as u64)
+            .saturating_mul(percent as u64)
+            .saturating_mul(bonus as u64)
+            / 100
+            / 10_000
+    }
+
+    fn refresh_random_support_skill(&self, state: &mut GameState, rng: &mut impl Rng) -> String {
+        let now = state.now();
+        let candidates = state
+            .supports
+            .iter()
+            .enumerate()
+            .filter(|(index, support)| {
+                support.owned && support.ready_at > now && self.support_is_unlocked(state, *index)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let Some(index) = candidates.get(rng.random_range(0..candidates.len().max(1))).copied()
+        else {
+            return "none".to_string();
+        };
+        state.supports[index].ready_at = now;
+        state.supports[index].name.to_string()
+    }
+
+    fn fill_home_food(&self, state: &mut GameState) -> String {
+        let before = self.total_food_available(state);
+        let added = self.add_home_food(state, self.data.economy.manaphy_food_num.value, false);
+        format!(
+            "Manaphy food burst: +{} berries",
+            self.total_food_available(state)
+                .saturating_sub(before)
+                .max(added)
+        )
+    }
+
+    fn random_event_retire_and_fish(&self, state: &mut GameState, rng: &mut impl Rng) {
+        state.random_event_retirements = state.random_event_retirements.saturating_add(1);
+        state.generation = state.generation.saturating_add(1);
+        state.must_max_after_intentional_loss = false;
+        state.magikarp = self.rules.new_magikarp(state, rng);
+        self.discover_pattern(state);
+        self.check_fished_achievements(state);
+        self.check_random_event_retirement_achievements(state);
+        for berry in &mut state.berries {
+            berry.available = berry.max_available;
+        }
+        state.stamina = state.max_stamina;
+    }
+
+    fn collect_home_treasure(&self, state: &mut GameState, rng: &mut impl Rng) -> String {
+        let total_weight = self
+            .data
+            .treasure_rewards
+            .iter()
+            .map(|reward| reward.freq)
+            .sum::<u32>();
+        if total_weight == 0 {
+            return "no treasure table".to_string();
+        }
+        let mut roll = rng.random_range(0..total_weight);
+        let Some(reward) = self.data.treasure_rewards.iter().find(|reward| {
+            if roll < reward.freq {
+                true
+            } else {
+                roll -= reward.freq;
+                false
+            }
+        }) else {
+            return "no treasure selected".to_string();
+        };
+
+        match reward.genre_id {
+            1 => {
+                let amount = self
+                    .data
+                    .economy
+                    .home_treasure_base_coins
+                    .value
+                    .saturating_mul(reward.num as u64)
+                    .saturating_mul(self.treasure_coin_bonus_permyriad(state) as u64)
+                    / 10_000;
+                state.coins = state.coins.saturating_add(amount);
+                format!("{} coins {}", reward.memo, amount)
+            }
+            2 => {
+                self.add_home_food(state, reward.num, false);
+                format!("{} berries {}", reward.memo, reward.num)
+            }
+            3 => {
+                self.credit_diamonds(
+                    state,
+                    reward.num,
+                    DiamondSource::SunkenTreasure,
+                    "home treasure diamonds".to_string(),
+                    reward.provenance,
+                );
+                format!("{} diamonds {}", reward.memo, reward.num)
+            }
+            4 => {
+                state.training_sodas = state.training_sodas.saturating_add(reward.num);
+                format!("{} training soda {}", reward.memo, reward.num)
+            }
+            _ => format!("{} unknown genre {}", reward.memo, reward.genre_id),
+        }
+    }
+
+    fn add_home_food(&self, state: &mut GameState, amount: u32, respect_cap: bool) -> u32 {
+        let mut added = 0;
+        while added < amount {
+            if respect_cap && self.total_food_available(state) >= state.max_food {
+                break;
+            }
+            let Some(index) = self.next_food_spawn_index(state) else {
+                break;
+            };
+            state.berries[index].available = state.berries[index].available.saturating_add(1);
+            added += 1;
+        }
+        added
     }
 
     fn check_feed_achievements(&self, state: &mut GameState) {
-        let _ = state;
-        // Times Fed achievements award coins, not diamonds.
+        for (milestone, amount) in [
+            (80, 11),
+            (200, 20),
+            (2_200, 150),
+            (8_000, 1_700),
+            (18_000, 36_000),
+        ] {
+            if state.magikarp.foods_eaten >= milestone {
+                self.queue_achievement_coins_once(
+                    state,
+                    format!("foods-eaten:{milestone}"),
+                    amount,
+                    format!("foods eaten {milestone}"),
+                );
+            }
+        }
     }
 
     fn check_training_achievements(&self, state: &mut GameState) {
-        let _ = state;
-        // Times Trained achievements award coins, not diamonds.
+        for (milestone, amount) in [
+            (5, 11),
+            (30, 20),
+            (200, 150),
+            (600, 2_100),
+            (1_300, 43_000),
+        ] {
+            if state.magikarp.trainings_done >= milestone {
+                self.queue_achievement_coins_once(
+                    state,
+                    format!("trainings:{milestone}"),
+                    amount,
+                    format!("trainings completed {milestone}"),
+                );
+            }
+        }
     }
 
     fn check_support_skill_achievements(&self, state: &mut GameState) {
@@ -1167,13 +1776,66 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn check_retirement_achievements(&self, state: &mut GameState) {
-        for milestone in [1, 4, 12, 25, 70] {
+        for (milestone, amount) in [(1, 11), (2, 30), (10, 230), (30, 2_100), (80, 43_000)] {
             if state.retirements >= milestone {
-                self.queue_achievement_diamonds_once(
+                self.queue_achievement_coins_once(
                     state,
                     format!("retirements:{milestone}"),
+                    amount,
+                    format!("magikarp retired at max level {milestone}"),
+                );
+            }
+        }
+    }
+
+    fn check_competition_win_achievements(&self, state: &mut GameState) {
+        for (milestone, amount) in [(4, 11), (30, 30), (100, 230), (330, 2_100), (700, 43_000)] {
+            if state.league_wins_total >= milestone {
+                self.queue_achievement_coins_once(
+                    state,
+                    format!("league-wins:{milestone}"),
+                    amount,
+                    format!("league victories {milestone}"),
+                );
+            }
+        }
+    }
+
+    fn check_decor_achievements(&self, state: &mut GameState) {
+        let owned = state.decors.iter().filter(|decor| decor.owned).count() as u32;
+        for (milestone, amount) in [(3, 1), (6, 1), (9, 2), (12, 3), (16, 4)] {
+            if owned >= milestone {
+                self.queue_achievement_candy_once(
+                    state,
+                    format!("decors:{milestone}"),
+                    amount,
+                    format!("decorations owned {milestone}"),
+                );
+            }
+        }
+    }
+
+    fn check_item_use_achievements(&self, state: &mut GameState) {
+        for (milestone, amount) in [(5, 1), (20, 1), (40, 1), (80, 2), (180, 3)] {
+            if state.items_used >= milestone {
+                self.queue_achievement_candy_once(
+                    state,
+                    format!("items-used:{milestone}"),
+                    amount,
+                    format!("items used {milestone}"),
+                );
+            }
+        }
+    }
+
+    fn check_random_event_retirement_achievements(&self, state: &mut GameState) {
+        for milestone in [1, 4, 12, 25, 70] {
+            if state.random_event_retirements >= milestone {
+                self.queue_achievement_diamonds_once(
+                    state,
+                    format!("random-event-retirements:{milestone}"),
                     self.data.economy.achievement_diamonds_minor.value,
-                    format!("magikarp forced to retire {milestone}"),
+                    format!("random event retirements {milestone}"),
                 );
             }
         }
@@ -1325,6 +1987,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             }
             state.max_food = state.max_food.saturating_add(extra);
         }
+        self.check_decor_achievements(state);
     }
 
     fn next_equal_berry_upgrade(&self, state: &GameState) -> Option<usize> {
@@ -1376,7 +2039,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .berry_jp(berry.id, berry.level)
             .unwrap_or(self.data.berries[index].base_kp.value);
         self.apply_magikarp_bonus(state, base)
-            * self.kp_bonus_permyriad(state) as Kp
+            * self.food_kp_bonus_permyriad(state) as Kp
             * self.active_kp_gain_buff_permyriad(state) as Kp
             / 10_000
             / 10_000
@@ -1411,20 +2074,6 @@ impl<R: Rules> WallTimeSimulator<R> {
 
     fn apply_magikarp_bonus(&self, state: &GameState, base: Kp) -> Kp {
         base.saturating_mul(10_000 + state.magikarp.individual_bonus_permyriad as Kp) / 10_000
-    }
-
-    fn kp_bonus_permyriad(&self, state: &GameState) -> u32 {
-        state
-            .decors
-            .iter()
-            .enumerate()
-            .filter(|(_, decor)| decor.owned)
-            .fold(10_000, |acc, (index, _)| {
-                match self.data.decors[index].effect {
-                    DecorEffect::KpPermyriad(mult) => acc * mult / 10_000,
-                    _ => acc,
-                }
-            })
     }
 
     fn coin_bonus_permyriad(&self, state: &GameState) -> u32 {
@@ -1464,6 +2113,118 @@ impl<R: Rules> WallTimeSimulator<R> {
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
                     DecorEffect::TrainingEventPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn league_event_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::LeagueEventPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn event_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::EventCoinPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn event_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::EventKpPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn food_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::FoodKpPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn skill_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::SkillKpPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn league_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::LeagueCoinPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn treasure_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::TreasureCoinPermyriad(mult) => acc * mult / 10_000,
+                    _ => acc,
+                }
+            })
+    }
+
+    fn level_up_coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+        state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(self.coin_bonus_permyriad(state), |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::LevelUpCoinPermyriad(mult) => acc * mult / 10_000,
                     _ => acc,
                 }
             })
@@ -1575,6 +2336,28 @@ fn log_event(
         event: event.into(),
         detail: detail.into(),
     });
+}
+
+fn support_slug_from_master_id(id: u32) -> Option<&'static str> {
+    match id {
+        1 => Some("pikachu"),
+        2 => Some("piplup"),
+        3 => Some("snorlax"),
+        4 => Some("charizard"),
+        5 => Some("greninja"),
+        6 => Some("meowth"),
+        7 => Some("bulbasaur"),
+        8 => Some("slowpoke"),
+        9 => Some("mudkip"),
+        10 => Some("popplio"),
+        11 => Some("rowlet"),
+        12 => Some("litten"),
+        13 => Some("gengar"),
+        14 => Some("eevee"),
+        15 => Some("mimikyu"),
+        16 => Some("gardevoir"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

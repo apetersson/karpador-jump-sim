@@ -12,6 +12,9 @@ pub struct GameData {
     pub decors: Vec<DecorItemData>,
     pub leagues: Vec<LeagueData>,
     pub economy: EconomyData,
+    pub random_events: Vec<RandomEventData>,
+    pub random_event_parameters: RandomEventParameters,
+    pub treasure_rewards: Vec<TreasureRewardData>,
     pub food_upgrade_costs: Vec<Vec<Provenanced<u64>>>,
     pub training_upgrade_costs: Vec<Vec<Provenanced<u64>>>,
     pub breeder_ranks: Vec<BreederRankData>,
@@ -82,7 +85,10 @@ pub struct DecorItemData {
 #[derive(Clone, Debug, Serialize)]
 pub enum DecorEffect {
     KpPermyriad(u32),
+    FoodKpPermyriad(u32),
+    EventKpPermyriad(u32),
     CoinPermyriad(u32),
+    LeagueCoinPermyriad(u32),
     TrainingPermyriad(u32),
     SkillKpPermyriad(u32),
     EventCoinPermyriad(u32),
@@ -147,6 +153,7 @@ pub struct MagikarpRankData {
     pub rank: u32,
     pub need_kp: Provenanced<u128>,
     pub retirement_breeder_exp: Provenanced<u128>,
+    pub level_up_coins: Provenanced<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -176,7 +183,76 @@ pub struct EconomyData {
     pub diamond_miner_f2p_enabled: Provenanced<bool>,
     pub food_respawn_minutes: Provenanced<u32>,
     pub food_respawn_seconds: Provenanced<u32>,
+    pub home_food_max: Provenanced<u32>,
+    pub manaphy_food_num: Provenanced<u32>,
     pub stamina_respawn_minutes: Provenanced<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TreasureRewardData {
+    pub genre_id: u32,
+    pub freq: u32,
+    pub num: u32,
+    pub memo: &'static str,
+    pub provenance: Provenance,
+    pub source: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RandomEventParameters {
+    pub training_chance_permyriad: Provenanced<u32>,
+    pub training_max_per_day: Provenanced<u32>,
+    pub league_win_chance_permyriad: Provenanced<u32>,
+    pub league_win_max_per_day: Provenanced<u32>,
+    pub league_loss_chance_permyriad: Provenanced<u32>,
+    pub league_loss_max_per_day: Provenanced<u32>,
+    pub home_chance_permyriad: Provenanced<u32>,
+    pub home_cooldown_minutes: Provenanced<u32>,
+    pub home_max_cooldown_minutes: Provenanced<u32>,
+}
+
+impl RandomEventParameters {
+    fn approx(source: &'static str) -> Self {
+        Self {
+            training_chance_permyriad: Provenanced::new(250, Provenance::Assumption, source),
+            training_max_per_day: Provenanced::new(3, Provenance::Assumption, source),
+            league_win_chance_permyriad: Provenanced::new(0, Provenance::Assumption, source),
+            league_win_max_per_day: Provenanced::new(0, Provenance::Assumption, source),
+            league_loss_chance_permyriad: Provenanced::new(0, Provenance::Assumption, source),
+            league_loss_max_per_day: Provenanced::new(0, Provenance::Assumption, source),
+            home_chance_permyriad: Provenanced::new(0, Provenance::Assumption, source),
+            home_cooldown_minutes: Provenanced::new(240, Provenance::Assumption, source),
+            home_max_cooldown_minutes: Provenanced::new(1_440, Provenance::Assumption, source),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum RandomEventOccurrence {
+    Home,
+    Training,
+    LeagueWin,
+    LeagueLoss,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RandomEventData {
+    pub id: u32,
+    pub name: &'static str,
+    pub occurrence: RandomEventOccurrence,
+    pub need_league_id: u32,
+    pub need_support_pokemon_id: u32,
+    pub need_generation: u32,
+    pub bonus_type: u32,
+    pub bonus_num: u32,
+    pub success_bonus_type: u32,
+    pub success_bonus_num: u32,
+    pub success_chance_permyriad: u32,
+    pub penalty_type: u32,
+    pub penalty_num: u32,
+    pub freq: u32,
+    pub provenance: Provenance,
+    pub source: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -699,12 +775,17 @@ impl GameData {
                     Provenance::Disassembly,
                     "OtherParameter::getHomeFoodNeedSec symbol identified",
                 ),
+                home_food_max: Provenanced::new(3, Provenance::Assumption, assumption_src),
+                manaphy_food_num: Provenanced::new(25, Provenance::Assumption, assumption_src),
                 stamina_respawn_minutes: Provenanced::new(
                     30,
                     Provenance::Disassembly,
                     "Stamina respawn behavior inferred from simulator v0 and symbols",
                 ),
             },
+            random_events: Vec::new(),
+            random_event_parameters: RandomEventParameters::approx(assumption_src),
+            treasure_rewards: Vec::new(),
             food_upgrade_costs: Vec::new(),
             training_upgrade_costs: Vec::new(),
             breeder_ranks: Vec::new(),
@@ -755,9 +836,18 @@ impl GameData {
         ));
         let treasure_rows: Vec<TreasureRow> =
             json_rows(include_str!("../decoded_master_data/treasure_data.json"));
+        let random_event_rows: Vec<RandomEventRow> = json_rows(include_str!(
+            "../decoded_master_data/random_event_list.json"
+        ));
+        let random_event_parameter_rows: Vec<RandomEventParametersRow> = json_rows(include_str!(
+            "../decoded_master_data/random_event_parameters.json"
+        ));
         let other = other_rows
             .first()
             .expect("other_parameters.json contains one row");
+        let random_event_parameters_row = random_event_parameter_rows
+            .first()
+            .expect("random_event_parameters.json contains one row");
 
         let food_upgrade_costs =
             table_matrix(&food_price, "food_", 17, Provenance::Asset, asset_src);
@@ -1026,6 +1116,11 @@ impl GameData {
                     Provenance::Asset,
                     asset_src,
                 ),
+                level_up_coins: Provenanced::new(
+                    parse_u64(&row.second_bonus_coin),
+                    Provenance::Asset,
+                    asset_src,
+                ),
             })
             .collect::<Vec<_>>();
         let jump_curve = jump_rows
@@ -1046,7 +1141,97 @@ impl GameData {
             .find(|row| row.genre_id == "3")
             .map(|row| (parse_u32(&row.num), parse_u32(&row.freq)))
             .unwrap_or((0, 0));
-        let treasure_coin_mean = weighted_treasure_coin_num(&treasure_rows);
+        let treasure_rewards = treasure_rows
+            .iter()
+            .map(|row| TreasureRewardData {
+                genre_id: parse_u32(&row.genre_id),
+                freq: parse_u32(&row.freq),
+                num: parse_u32(&row.num),
+                memo: leak_str(row.memo.clone()),
+                provenance: Provenance::Asset,
+                source: asset_src,
+            })
+            .collect::<Vec<_>>();
+        let random_events = random_event_rows
+            .iter()
+            .filter(|row| row.is_active == "TRUE")
+            .filter(|row| parse_u32(&row.freq) > 0)
+            .filter(|row| parse_u32(&row.need_command) == 0)
+            .filter_map(|row| {
+                let occurrence = match parse_u32(&row.occurrance_type) {
+                    1 => RandomEventOccurrence::Home,
+                    2 => RandomEventOccurrence::Training,
+                    3 => RandomEventOccurrence::LeagueWin,
+                    4 => RandomEventOccurrence::LeagueLoss,
+                    _ => return None,
+                };
+                Some(RandomEventData {
+                    id: parse_u32(&row.id),
+                    name: leak_str(row.name_memo.clone()),
+                    occurrence,
+                    need_league_id: parse_u32(&row.need_league_id),
+                    need_support_pokemon_id: parse_u32(&row.need_support_pokemon_id),
+                    need_generation: parse_u32(&row.need_generation),
+                    bonus_type: parse_u32(&row.bonus_type),
+                    bonus_num: parse_u32(&row.bonus_num),
+                    success_bonus_type: parse_u32(&row.success_bonus_type),
+                    success_bonus_num: parse_u32(&row.success_bonus_num),
+                    success_chance_permyriad: parse_u32(&row.success_per).saturating_mul(100),
+                    penalty_type: parse_u32(&row.penalty_type),
+                    penalty_num: parse_u32(&row.penalty_num),
+                    freq: parse_u32(&row.freq),
+                    provenance: Provenance::Asset,
+                    source: asset_src,
+                })
+            })
+            .collect::<Vec<_>>();
+        let random_event_parameters = RandomEventParameters {
+            training_chance_permyriad: Provenanced::new(
+                parse_u32(&random_event_parameters_row.training_occurrence_per) * 100,
+                Provenance::Asset,
+                asset_src,
+            ),
+            training_max_per_day: Provenanced::new(
+                parse_u32(&random_event_parameters_row.training_occurrence_max),
+                Provenance::Asset,
+                asset_src,
+            ),
+            league_win_chance_permyriad: Provenanced::new(
+                parse_u32(&random_event_parameters_row.league_win_occurrence_per) * 100,
+                Provenance::Asset,
+                asset_src,
+            ),
+            league_win_max_per_day: Provenanced::new(
+                parse_u32(&random_event_parameters_row.league_win_occurence_max),
+                Provenance::Asset,
+                asset_src,
+            ),
+            league_loss_chance_permyriad: Provenanced::new(
+                parse_u32(&random_event_parameters_row.league_lose_occurrence_per) * 100,
+                Provenance::Asset,
+                asset_src,
+            ),
+            league_loss_max_per_day: Provenanced::new(
+                parse_u32(&random_event_parameters_row.league_lose_occurence_max),
+                Provenance::Asset,
+                asset_src,
+            ),
+            home_chance_permyriad: Provenanced::new(
+                parse_u32(&random_event_parameters_row.home_occurrence_per) * 100,
+                Provenance::Asset,
+                asset_src,
+            ),
+            home_cooldown_minutes: Provenanced::new(
+                parse_u32(&random_event_parameters_row.home_occurrence_sec).div_ceil(60),
+                Provenance::Asset,
+                asset_src,
+            ),
+            home_max_cooldown_minutes: Provenanced::new(
+                parse_u32(&random_event_parameters_row.home_occurrence_max_sec).div_ceil(60),
+                Provenance::Asset,
+                asset_src,
+            ),
+        };
 
         Self {
             name: "apk-masterdata-v1",
@@ -1073,7 +1258,7 @@ impl GameData {
                     asset_src,
                 ),
                 home_treasure_base_coins: Provenanced::new(
-                    treasure_coin_mean.max(parse_u64(&other.first_coin_num)),
+                    parse_u64(&other.first_coin_num),
                     Provenance::Asset,
                     asset_src,
                 ),
@@ -1097,9 +1282,9 @@ impl GameData {
                 ),
                 random_event_diamonds: Provenanced::new(5, Provenance::Asset, asset_src),
                 random_event_diamond_chance_permyriad: Provenanced::new(
-                    250,
-                    Provenance::Assumption,
-                    "random_event_list.json is decoded, but event selection model is still simplified",
+                    parse_u32(&random_event_parameters_row.training_occurrence_per) * 100,
+                    Provenance::Asset,
+                    "legacy aggregate; simulator uses random_event_parameters.json plus random_event_list.json",
                 ),
                 sunken_treasure_diamonds: Provenanced::new(
                     treasure_diamond.0,
@@ -1124,12 +1309,25 @@ impl GameData {
                     Provenance::Asset,
                     "other_parameters.json home_food_sec exact value",
                 ),
+                home_food_max: Provenanced::new(
+                    parse_u32(&other.home_food_max_num),
+                    Provenance::Asset,
+                    "other_parameters.json home_food_max_num exact value",
+                ),
+                manaphy_food_num: Provenanced::new(
+                    parse_u32(&other.manaphy_fever_food_num),
+                    Provenance::Asset,
+                    "other_parameters.json manaphy_fever_food_num exact value",
+                ),
                 stamina_respawn_minutes: Provenanced::new(
                     30,
                     Provenance::Assumption,
                     "training point recovery interval not yet isolated in decoded master data",
                 ),
             },
+            random_events,
+            random_event_parameters,
+            treasure_rewards,
             food_upgrade_costs,
             training_upgrade_costs,
             breeder_ranks,
@@ -1294,6 +1492,11 @@ impl GameData {
                 count(competition.loss_reward_coins.provenance);
             }
         }
+        for rank in &self.magikarp_ranks {
+            count(rank.need_kp.provenance);
+            count(rank.retirement_breeder_exp.provenance);
+            count(rank.level_up_coins.provenance);
+        }
         count(self.economy.initial_diamonds.provenance);
         count(self.economy.trainer_rank_up_diamonds.provenance);
         count(self.economy.home_treasure_cooldown_minutes.provenance);
@@ -1321,7 +1524,36 @@ impl GameData {
         count(self.economy.diamond_miner_f2p_enabled.provenance);
         count(self.economy.food_respawn_minutes.provenance);
         count(self.economy.food_respawn_seconds.provenance);
+        count(self.economy.home_food_max.provenance);
+        count(self.economy.manaphy_food_num.provenance);
         count(self.economy.stamina_respawn_minutes.provenance);
+        count(self.random_event_parameters.training_chance_permyriad.provenance);
+        count(self.random_event_parameters.training_max_per_day.provenance);
+        count(
+            self.random_event_parameters
+                .league_win_chance_permyriad
+                .provenance,
+        );
+        count(self.random_event_parameters.league_win_max_per_day.provenance);
+        count(
+            self.random_event_parameters
+                .league_loss_chance_permyriad
+                .provenance,
+        );
+        count(self.random_event_parameters.league_loss_max_per_day.provenance);
+        count(self.random_event_parameters.home_chance_permyriad.provenance);
+        count(self.random_event_parameters.home_cooldown_minutes.provenance);
+        count(
+            self.random_event_parameters
+                .home_max_cooldown_minutes
+                .provenance,
+        );
+        for event in &self.random_events {
+            count(event.provenance);
+        }
+        for treasure in &self.treasure_rewards {
+            count(treasure.provenance);
+        }
 
         let mut warnings = Vec::new();
         if assumptions > 0 {
@@ -1333,6 +1565,11 @@ impl GameData {
             warnings.push(format!(
                 "{wiki} fields use wiki provenance and should be validated against local code/assets"
             ));
+        }
+        if !self.random_events.is_empty() {
+            warnings.push(
+                "random event chances and weights come from APK assets; effect formulas are inferred from APK result fields plus wiki wording and still need native-function validation".to_string(),
+            );
         }
 
         DataAuditReport {
@@ -1458,6 +1695,7 @@ struct MagikarpRankRow {
     rank: String,
     need_kp: String,
     retirement_breeder_exp: String,
+    second_bonus_coin: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1473,6 +1711,8 @@ struct OtherParametersRow {
     new_pattern_bonus_dia: String,
     first_coin_num: String,
     home_food_sec: String,
+    home_food_max_num: String,
+    manaphy_fever_food_num: String,
     tutorial_clear_dia: String,
 }
 
@@ -1481,6 +1721,41 @@ struct TreasureRow {
     freq: String,
     num: String,
     genre_id: String,
+    memo: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RandomEventRow {
+    id: String,
+    #[serde(rename = "name:memo")]
+    name_memo: String,
+    occurrance_type: String,
+    need_league_id: String,
+    need_support_pokemon_id: String,
+    need_command: String,
+    need_generation: String,
+    bonus_type: String,
+    bonus_num: String,
+    success_bonus_type: String,
+    success_bonus_num: String,
+    success_per: String,
+    penalty_type: String,
+    penalty_num: String,
+    freq: String,
+    is_active: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RandomEventParametersRow {
+    training_occurrence_per: String,
+    training_occurrence_max: String,
+    league_win_occurrence_per: String,
+    league_win_occurence_max: String,
+    league_lose_occurrence_per: String,
+    league_lose_occurence_max: String,
+    home_occurrence_per: String,
+    home_occurrence_sec: String,
+    home_occurrence_max_sec: String,
 }
 
 fn json_rows<T: for<'de> Deserialize<'de>>(raw: &'static str) -> Vec<T> {
@@ -1630,9 +1905,11 @@ fn support_skill(id: u32, row: &SupportPokemonRow) -> SupportSkill {
 fn decor_effect(bonus_type: u32, bonus_num: u32) -> DecorEffect {
     let mult = 10_000 + bonus_num * 100;
     match bonus_type {
-        2 | 3 | 6 => DecorEffect::KpPermyriad(mult),
+        2 => DecorEffect::CoinPermyriad(mult),
+        3 => DecorEffect::EventKpPermyriad(mult),
         4 => DecorEffect::EventCoinPermyriad(mult),
-        5 => DecorEffect::CoinPermyriad(mult),
+        5 => DecorEffect::LeagueCoinPermyriad(mult),
+        6 => DecorEffect::FoodKpPermyriad(mult),
         7 => DecorEffect::TrainingPermyriad(mult),
         10 => DecorEffect::SkillKpPermyriad(mult),
         11 => DecorEffect::SkillRecoveryPermyriad(mult),
@@ -1644,19 +1921,6 @@ fn decor_effect(bonus_type: u32, bonus_num: u32) -> DecorEffect {
         17 => DecorEffect::LevelUpCoinPermyriad(mult),
         _ => DecorEffect::Unknown,
     }
-}
-
-fn weighted_treasure_coin_num(rows: &[TreasureRow]) -> u64 {
-    let mut weighted = 0_u64;
-    let mut total = 0_u64;
-    for row in rows {
-        let freq = parse_u64(&row.freq);
-        if row.genre_id == "1" {
-            weighted += freq * parse_u64(&row.num);
-        }
-        total += freq;
-    }
-    if total == 0 { 0 } else { weighted / total }
 }
 
 fn support_candy_costs(costs: &[u32]) -> Vec<Provenanced<u32>> {
