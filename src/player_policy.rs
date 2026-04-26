@@ -58,7 +58,7 @@ pub struct ActivePlayerPolicy {
     purchase_plan: PurchasePlan,
     plan_cursor: usize,
     berries_eaten_before_fight: u32,
-    ate_rest_after_block: bool,
+    rest_berry_batches_after_block: u8,
     league_loss_done: Vec<bool>,
     must_max_after_intentional_loss: bool,
 }
@@ -78,7 +78,7 @@ impl ActivePlayerPolicy {
             purchase_plan,
             plan_cursor: 0,
             berries_eaten_before_fight: 0,
-            ate_rest_after_block: false,
+            rest_berry_batches_after_block: 0,
             league_loss_done: Vec::new(),
             must_max_after_intentional_loss: false,
         }
@@ -191,7 +191,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
 
     fn begin_session(&mut self) {
         self.berries_eaten_before_fight = 0;
-        self.ate_rest_after_block = false;
+        self.rest_berry_batches_after_block = 0;
     }
 
     fn choose_action(&mut self, context: &DecisionContext<'_>) -> PolicyDecision {
@@ -291,9 +291,9 @@ impl WallTimePolicy for ActivePlayerPolicy {
         }) {
             return PolicyDecision::Execute(action);
         }
-        if !self.ate_rest_after_block {
+        if self.rest_berry_batches_after_block < 2 {
             if let Some(action) = Self::eat_all_berries_action(actions) {
-                self.ate_rest_after_block = true;
+                self.rest_berry_batches_after_block += 1;
                 return PolicyDecision::Execute(action);
             }
         }
@@ -304,7 +304,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
         match action {
             WallAction::Train => {
                 self.berries_eaten_before_fight = 0;
-                self.ate_rest_after_block = false;
+                self.rest_berry_batches_after_block = 0;
             }
             WallAction::EatBerries { count, .. } => {
                 self.berries_eaten_before_fight =
@@ -317,7 +317,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
                 self.league_loss_done[before.league as usize] = true;
                 self.must_max_after_intentional_loss = true;
                 self.berries_eaten_before_fight = 0;
-                self.ate_rest_after_block = false;
+                self.rest_berry_batches_after_block = 0;
             }
             WallAction::LeagueFight {
                 intent: LeagueFightIntent::TryWin,
@@ -326,7 +326,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
                     self.must_max_after_intentional_loss = false;
                 }
                 self.berries_eaten_before_fight = 0;
-                self.ate_rest_after_block = false;
+                self.rest_berry_batches_after_block = 0;
             }
             _ => {}
         }
