@@ -53,6 +53,7 @@ pub struct GameState {
     pub generation: u32,
     pub retirements: u32,
     pub berries: Vec<BerryState>,
+    pub trainings: Vec<TrainingState>,
     pub supports: Vec<SupportState>,
     pub decors: Vec<DecorState>,
     pub pending_achievement_claims: u32,
@@ -207,6 +208,13 @@ pub struct BerryState {
     pub level: u32,
     pub available: u32,
     pub max_available: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TrainingState {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub level: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]

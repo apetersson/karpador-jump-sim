@@ -15,7 +15,7 @@ pub use data::{DataAuditReport, GameData};
 pub use model::{
     Action, BerryState, DecorState, DiamondLedgerEntry, DiamondSource, GameState, MagikarpState,
     PendingDiamondReward, Provenance, PurchaseKind, PurchasePlan, PurchaseTarget, SupportState,
-    WallClock,
+    TrainingState, WallClock,
 };
 pub use optimizer::{OptimizerConfig, OptimizerReport, PlanScore, optimize_purchase_plans};
 pub use player_policy::{

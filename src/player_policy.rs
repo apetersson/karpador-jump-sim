@@ -17,6 +17,7 @@ pub enum WallAction {
     UseSkillHerb,
     BuyShopItem { target: PurchaseTarget },
     UpgradeBerry { berry_id: String },
+    UpgradeTraining { training_id: String },
     Train,
     EatBerries { berry_id: String, count: u32 },
     LeagueFight { intent: LeagueFightIntent },
@@ -26,6 +27,7 @@ pub enum WallAction {
 pub struct AvailableAction {
     pub action: WallAction,
     pub reason: &'static str,
+    pub cost_coins: Option<u64>,
 }
 
 pub struct DecisionContext<'a> {
@@ -56,6 +58,9 @@ pub trait WallTimePolicy {
 #[derive(Clone, Debug)]
 pub struct ActivePlayerPolicy {
     purchase_plan: PurchasePlan,
+    training_upgrade_share_permyriad: u32,
+    berry_upgrade_coins_spent: u64,
+    training_upgrade_coins_spent: u64,
     plan_cursor: usize,
     berries_eaten_before_fight: u32,
     ate_rest_after_block: bool,
@@ -76,11 +81,24 @@ impl ActivePlayerPolicy {
     pub fn with_purchase_plan(purchase_plan: PurchasePlan) -> Self {
         Self {
             purchase_plan,
+            training_upgrade_share_permyriad: 0,
+            berry_upgrade_coins_spent: 0,
+            training_upgrade_coins_spent: 0,
             plan_cursor: 0,
             berries_eaten_before_fight: 0,
             ate_rest_after_block: false,
             league_loss_done: Vec::new(),
             must_max_after_intentional_loss: false,
+        }
+    }
+
+    pub fn with_purchase_plan_and_training_share(
+        purchase_plan: PurchasePlan,
+        training_upgrade_share_permyriad: u32,
+    ) -> Self {
+        Self {
+            training_upgrade_share_permyriad: training_upgrade_share_permyriad.min(10_000),
+            ..Self::with_purchase_plan(purchase_plan)
         }
     }
 
@@ -166,6 +184,61 @@ impl ActivePlayerPolicy {
             .map(|(_, _, action)| action)
     }
 
+    fn starter_training_upgrade_action(actions: &[AvailableAction]) -> Option<WallAction> {
+        actions
+            .iter()
+            .filter_map(|available| match &available.action {
+                WallAction::UpgradeTraining { training_id } => {
+                    Some((training_id.as_str(), available.action.clone()))
+                }
+                _ => None,
+            })
+            .min_by_key(|(id, _)| *id)
+            .map(|(_, action)| action)
+    }
+
+    fn upgrade_with_ratio(
+        &self,
+        state: &GameState,
+        actions: &[AvailableAction],
+    ) -> Option<WallAction> {
+        let berry = Self::equal_berry_upgrade_action(state, actions);
+        let training = Self::starter_training_upgrade_action(actions);
+        match (berry, training) {
+            (Some(berry), Some(training)) => self.best_ratio_action(actions, berry, training),
+            (Some(berry), None) => Some(berry),
+            (None, Some(training)) if self.training_upgrade_share_permyriad > 0 => Some(training),
+            (None, _) => None,
+        }
+    }
+
+    fn best_ratio_action(
+        &self,
+        actions: &[AvailableAction],
+        berry: WallAction,
+        training: WallAction,
+    ) -> Option<WallAction> {
+        let berry_cost = action_coin_cost(actions, &berry)?;
+        let training_cost = action_coin_cost(actions, &training)?;
+        let target = self.training_upgrade_share_permyriad.min(10_000) as u128;
+        let berry_error = ratio_error(
+            self.training_upgrade_coins_spent as u128,
+            self.berry_upgrade_coins_spent.saturating_add(berry_cost) as u128,
+            target,
+        );
+        let training_error = ratio_error(
+            self.training_upgrade_coins_spent
+                .saturating_add(training_cost) as u128,
+            self.berry_upgrade_coins_spent as u128,
+            target,
+        );
+        if training_error < berry_error {
+            Some(training)
+        } else {
+            Some(berry)
+        }
+    }
+
     fn ensure_league_slots(&mut self, league: u32) {
         let len = league as usize + 1;
         if self.league_loss_done.len() < len {
@@ -175,8 +248,7 @@ impl ActivePlayerPolicy {
 
     fn should_take_intentional_loss(&mut self, state: &GameState) -> bool {
         self.ensure_league_slots(state.league);
-        !self.league_loss_done[state.league as usize]
-            && !self.must_max_after_intentional_loss
+        !self.league_loss_done[state.league as usize] && !self.must_max_after_intentional_loss
     }
 }
 
@@ -232,7 +304,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
         if let Some(action) = self.buy_next_plan_item(state, actions) {
             return PolicyDecision::Execute(action);
         }
-        if let Some(action) = Self::equal_berry_upgrade_action(state, actions) {
+        if let Some(action) = self.upgrade_with_ratio(state, actions) {
             return PolicyDecision::Execute(action);
         }
         if let Some(action) =
@@ -306,6 +378,16 @@ impl WallTimePolicy for ActivePlayerPolicy {
                 self.berries_eaten_before_fight = 0;
                 self.ate_rest_after_block = false;
             }
+            WallAction::UpgradeBerry { .. } => {
+                self.berry_upgrade_coins_spent = self
+                    .berry_upgrade_coins_spent
+                    .saturating_add(before.coins.saturating_sub(after.coins));
+            }
+            WallAction::UpgradeTraining { .. } => {
+                self.training_upgrade_coins_spent = self
+                    .training_upgrade_coins_spent
+                    .saturating_add(before.coins.saturating_sub(after.coins));
+            }
             WallAction::EatBerries { count, .. } => {
                 self.berries_eaten_before_fight =
                     self.berries_eaten_before_fight.saturating_add(*count);
@@ -331,6 +413,23 @@ impl WallTimePolicy for ActivePlayerPolicy {
             _ => {}
         }
     }
+}
+
+fn action_coin_cost(actions: &[AvailableAction], action: &WallAction) -> Option<u64> {
+    actions
+        .iter()
+        .find(|available| available.action == *action)
+        .and_then(|available| available.cost_coins)
+}
+
+fn ratio_error(training_spent: u128, berry_spent: u128, target_training_share: u128) -> u128 {
+    let total = training_spent + berry_spent;
+    if total == 0 {
+        return target_training_share;
+    }
+    let left = training_spent.saturating_mul(10_000);
+    let right = total.saturating_mul(target_training_share);
+    left.abs_diff(right)
 }
 
 fn target_owned(state: &GameState, target: &PurchaseTarget) -> bool {

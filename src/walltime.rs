@@ -6,7 +6,7 @@ use crate::data::{DecorEffect, GameData, RandomEventData, RandomEventOccurrence,
 use crate::model::{
     BerryState, DecorState, DiamondLedgerEntry, DiamondSource, GameState, Kp, PendingCandyReward,
     PendingCoinReward, PendingDiamondReward, Provenance, PurchaseKind, PurchasePlan,
-    PurchaseTarget, SupportState, WallClock,
+    PurchaseTarget, SupportState, TrainingState, WallClock,
 };
 use crate::player_policy::{
     ActivePlayerPolicy, AvailableAction, DecisionContext, LeagueFightIntent, PolicyDecision,
@@ -315,6 +315,16 @@ impl<R: Rules> WallTimeSimulator<R> {
             })
             .collect();
         self.seed_initial_food(&mut state);
+        state.trainings = self
+            .data
+            .trainings
+            .iter()
+            .map(|training| TrainingState {
+                id: training.id,
+                name: training.name,
+                level: 1,
+            })
+            .collect();
         state.supports = self
             .data
             .supports
@@ -548,11 +558,25 @@ impl<R: Rules> WallTimeSimulator<R> {
                 && berry.level < self.data.berries[index].max_level
                 && state.coins >= self.berry_upgrade_cost(state, index)
             {
-                actions.push(available(
+                actions.push(available_with_coin_cost(
                     WallAction::UpgradeBerry {
                         berry_id: berry.id.to_string(),
                     },
                     "berry upgrade is affordable",
+                    self.berry_upgrade_cost(state, index),
+                ));
+            }
+        }
+        for (index, training) in state.trainings.iter().enumerate().take(2) {
+            if training.level < self.training_max_level()
+                && state.coins >= self.training_upgrade_cost(state, index)
+            {
+                actions.push(available_with_coin_cost(
+                    WallAction::UpgradeTraining {
+                        training_id: training.id.to_string(),
+                    },
+                    "starter training upgrade is affordable",
+                    self.training_upgrade_cost(state, index),
                 ));
             }
         }
@@ -818,6 +842,41 @@ impl<R: Rules> WallTimeSimulator<R> {
                         format!(
                             "{} to level {} for {} coins",
                             state.berries[index].name, state.berries[index].level, cost
+                        ),
+                    );
+                }
+                self.advance_minutes(state, 1);
+            }
+            WallAction::UpgradeTraining { training_id } => {
+                let Some(index) = state
+                    .trainings
+                    .iter()
+                    .position(|training| training.id == training_id)
+                else {
+                    self.advance_minutes(state, 1);
+                    return;
+                };
+                let cost = self.training_upgrade_cost(state, index);
+                if index < 2
+                    && state.coins >= cost
+                    && state.trainings[index].level < self.training_max_level()
+                {
+                    state.coins -= cost;
+                    state.trainings[index].level += 1;
+                    state.training_level = state
+                        .trainings
+                        .iter()
+                        .take(2)
+                        .map(|training| training.level)
+                        .min()
+                        .unwrap_or(1);
+                    log_event(
+                        action_log,
+                        state,
+                        "upgrade_training",
+                        format!(
+                            "{} to level {} for {} coins",
+                            state.trainings[index].name, state.trainings[index].level, cost
                         ),
                     );
                 }
@@ -2063,11 +2122,33 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
         let index = unlocked[rng.random_range(0..unlocked.len())];
         let training = &self.data.trainings[index];
-        let base = self
-            .data
-            .training_jp(training.id, state.training_level)
-            .unwrap_or(0);
+        let level = state
+            .trainings
+            .get(index)
+            .map(|training| training.level)
+            .unwrap_or(state.training_level);
+        let base = self.data.training_jp(training.id, level).unwrap_or(0);
         (training.name, self.apply_magikarp_bonus(state, base))
+    }
+
+    fn training_upgrade_cost(&self, state: &GameState, index: usize) -> u64 {
+        self.data
+            .training_upgrade_costs
+            .get(
+                state
+                    .trainings
+                    .get(index)
+                    .map(|training| training.level)
+                    .unwrap_or(state.training_level)
+                    .saturating_sub(1) as usize,
+            )
+            .and_then(|row| row.get(index))
+            .map(|cost| cost.value)
+            .unwrap_or_else(|| self.rules.training_upgrade_cost(state))
+    }
+
+    fn training_max_level(&self) -> u32 {
+        self.data.training_upgrade_costs.len().max(1) as u32
     }
 
     fn training_result_gain(&self, base: Kp, result: crate::rules::TrainingResult) -> Kp {
@@ -2329,7 +2410,23 @@ fn summarize_diamond_income(ledger: &[DiamondLedgerEntry]) -> Vec<DiamondIncomeS
 }
 
 fn available(action: WallAction, reason: &'static str) -> AvailableAction {
-    AvailableAction { action, reason }
+    AvailableAction {
+        action,
+        reason,
+        cost_coins: None,
+    }
+}
+
+fn available_with_coin_cost(
+    action: WallAction,
+    reason: &'static str,
+    cost_coins: u64,
+) -> AvailableAction {
+    AvailableAction {
+        action,
+        reason,
+        cost_coins: Some(cost_coins),
+    }
 }
 
 fn invalid_policy_action_detail(

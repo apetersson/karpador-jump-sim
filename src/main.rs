@@ -87,6 +87,9 @@ struct RunArgs {
     #[arg(long, default_value_t = 10)]
     sessions_per_day: u8,
 
+    #[arg(long, default_value_t = 0)]
+    training_upgrade_share: u32,
+
     #[arg(long, default_value = "master-league")]
     target: String,
 
@@ -149,7 +152,15 @@ fn run_walltime(args: RunArgs) -> anyhow_free::Result<()> {
             ..WallSimConfig::default()
         },
     );
-    let result = sim.run(args.seed, plan);
+    let result = if args.training_upgrade_share > 0 {
+        let mut policy = karpador_sim::ActivePlayerPolicy::with_purchase_plan_and_training_share(
+            plan,
+            args.training_upgrade_share.min(10_000),
+        );
+        sim.run_with_policy(args.seed, &mut policy)
+    } else {
+        sim.run(args.seed, plan)
+    };
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
