@@ -1,0 +1,10 @@
+target/
+.DS_Store
+
+# Local autoresearch run artifacts; do not commit.
+research-results.tsv
+autoresearch-state.json
+autoresearch-lessons.md
+autoresearch-launch.json
+autoresearch-runtime.json
+autoresearch-runtime.log
