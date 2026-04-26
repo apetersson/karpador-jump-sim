@@ -293,6 +293,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
         }
         if !self.ate_rest_after_block {
             if let Some(action) = Self::eat_all_berries_action(actions) {
+                self.ate_rest_after_block = true;
                 return PolicyDecision::Execute(action);
             }
         }
@@ -308,9 +309,6 @@ impl WallTimePolicy for ActivePlayerPolicy {
             WallAction::EatBerries { count, .. } => {
                 self.berries_eaten_before_fight =
                     self.berries_eaten_before_fight.saturating_add(*count);
-                if self.berries_eaten_before_fight >= 3 {
-                    self.ate_rest_after_block = true;
-                }
             }
             WallAction::LeagueFight {
                 intent: LeagueFightIntent::IntentionallyLose,
