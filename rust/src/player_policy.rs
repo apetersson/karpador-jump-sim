@@ -1,4 +1,5 @@
 use crate::model::{GameState, PurchaseKind, PurchasePlan, PurchaseTarget};
+use crate::start_config::PolicyConfig;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum LeagueFightIntent {
@@ -59,6 +60,12 @@ pub trait WallTimePolicy {
 pub struct ActivePlayerPolicy {
     purchase_plan: PurchasePlan,
     training_upgrade_share_permyriad: u32,
+    allow_training_sodas: bool,
+    allow_skill_herbs: bool,
+    allow_support_upgrades: bool,
+    allowed_berry_upgrades: Option<Vec<String>>,
+    allowed_training_upgrades: Option<Vec<String>>,
+    karpador_loss_risk_max_level_percent: Option<u32>,
     berry_upgrade_coins_spent: u64,
     training_upgrade_coins_spent: u64,
     plan_cursor: usize,
@@ -82,6 +89,12 @@ impl ActivePlayerPolicy {
         Self {
             purchase_plan,
             training_upgrade_share_permyriad: 0,
+            allow_training_sodas: true,
+            allow_skill_herbs: true,
+            allow_support_upgrades: true,
+            allowed_berry_upgrades: None,
+            allowed_training_upgrades: None,
+            karpador_loss_risk_max_level_percent: None,
             berry_upgrade_coins_spent: 0,
             training_upgrade_coins_spent: 0,
             plan_cursor: 0,
@@ -90,6 +103,33 @@ impl ActivePlayerPolicy {
             league_loss_done: Vec::new(),
             must_max_after_intentional_loss: false,
         }
+    }
+
+    pub fn with_purchase_plan_and_config(
+        purchase_plan: PurchasePlan,
+        config: Option<&PolicyConfig>,
+    ) -> Self {
+        let mut policy = Self::with_purchase_plan(purchase_plan);
+        if let Some(config) = config {
+            if let Some(share) = config.training_upgrade_share {
+                policy.training_upgrade_share_permyriad = share.min(10_000);
+            }
+            if let Some(allow) = config.allow_training_sodas {
+                policy.allow_training_sodas = allow;
+            }
+            if let Some(allow) = config.allow_skill_herbs {
+                policy.allow_skill_herbs = allow;
+            }
+            if let Some(allow) = config.allow_support_upgrades {
+                policy.allow_support_upgrades = allow;
+            }
+            policy.allowed_berry_upgrades = config.allowed_berry_upgrades.clone();
+            policy.allowed_training_upgrades = config.allowed_training_upgrades.clone();
+            policy.karpador_loss_risk_max_level_percent = config
+                .karpador_loss_risk_max_level_percent
+                .map(|value| value.min(100));
+        }
+        policy
     }
 
     pub fn with_purchase_plan_and_training_share(
@@ -227,8 +267,12 @@ impl ActivePlayerPolicy {
         state: &GameState,
         actions: &[AvailableAction],
     ) -> Option<WallAction> {
-        let berry = Self::equal_berry_upgrade_action(state, actions);
-        let training = Self::starter_training_upgrade_action(actions);
+        let berry = Self::equal_berry_upgrade_action(state, actions).filter(|action| {
+            matches!(action, WallAction::UpgradeBerry { berry_id } if id_allowed(&self.allowed_berry_upgrades, berry_id))
+        });
+        let training = Self::starter_training_upgrade_action(actions).filter(|action| {
+            matches!(action, WallAction::UpgradeTraining { training_id } if id_allowed(&self.allowed_training_upgrades, training_id))
+        });
         match (berry, training) {
             (Some(berry), Some(training)) => self.best_ratio_action(actions, berry, training),
             (Some(berry), None) => Some(berry),
@@ -275,6 +319,13 @@ impl ActivePlayerPolicy {
         self.ensure_league_slots(state.league);
         !self.league_loss_done[state.league as usize] && !self.must_max_after_intentional_loss
     }
+
+    fn allows_karpador_loss_risk(&self, state: &GameState) -> bool {
+        let Some(percent) = self.karpador_loss_risk_max_level_percent else {
+            return true;
+        };
+        state.magikarp.level.saturating_mul(100) <= state.magikarp.max_level.saturating_mul(percent)
+    }
 }
 
 impl WallTimePolicy for ActivePlayerPolicy {
@@ -316,16 +367,25 @@ impl WallTimePolicy for ActivePlayerPolicy {
             }
         }
 
-        for predicate in [
-            |action: &WallAction| matches!(action, WallAction::UpgradeSupport { .. }),
-            |action: &WallAction| matches!(action, WallAction::UseSupport { .. }),
-            |action: &WallAction| matches!(action, WallAction::UseSkillHerb),
-        ] {
-            if let Some(action) = Self::find_action(actions, predicate) {
+        if self.allow_support_upgrades {
+            if let Some(action) = Self::find_action(actions, |action| {
+                matches!(action, WallAction::UpgradeSupport { .. })
+            }) {
                 return PolicyDecision::Execute(action);
             }
         }
-
+        if let Some(action) = Self::find_action(actions, |action| {
+            matches!(action, WallAction::UseSupport { .. })
+        }) {
+            return PolicyDecision::Execute(action);
+        }
+        if self.allow_skill_herbs {
+            if let Some(action) =
+                Self::find_action(actions, |action| matches!(action, WallAction::UseSkillHerb))
+            {
+                return PolicyDecision::Execute(action);
+            }
+        }
         if let Some(action) = self.buy_next_plan_item(state, actions) {
             return PolicyDecision::Execute(action);
         }
@@ -337,10 +397,12 @@ impl WallTimePolicy for ActivePlayerPolicy {
         {
             return PolicyDecision::Execute(action);
         }
-        if let Some(action) = Self::find_action(actions, |action| {
-            matches!(action, WallAction::UseTrainingSoda)
-        }) {
-            return PolicyDecision::Execute(action);
+        if self.allow_training_sodas {
+            if let Some(action) = Self::find_action(actions, |action| {
+                matches!(action, WallAction::UseTrainingSoda)
+            }) {
+                return PolicyDecision::Execute(action);
+            }
         }
         if self.berries_eaten_before_fight < 3 {
             if let Some(action) =
@@ -349,7 +411,7 @@ impl WallTimePolicy for ActivePlayerPolicy {
                 return PolicyDecision::Execute(action);
             }
         }
-        if self.should_take_intentional_loss(state) {
+        if self.should_take_intentional_loss(state) && self.allows_karpador_loss_risk(state) {
             if let Some(action) = Self::find_available(actions, |available| {
                 available.reason == "league champion fight can be intentionally lost"
                     && matches!(
@@ -438,6 +500,13 @@ impl WallTimePolicy for ActivePlayerPolicy {
             _ => {}
         }
     }
+}
+
+fn id_allowed(allowed: &Option<Vec<String>>, id: &str) -> bool {
+    allowed
+        .as_ref()
+        .map(|ids| ids.iter().any(|allowed| allowed == id))
+        .unwrap_or(true)
 }
 
 fn action_coin_cost(actions: &[AvailableAction], action: &WallAction) -> Option<u64> {

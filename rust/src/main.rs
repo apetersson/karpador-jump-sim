@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use karpador_sim::{
-    audit_curves, optimize_purchase_plans, ApkRules, ApproxRules, EarlyCompeteStrategy, GameData,
-    GreedyKpStrategy, OptimizerConfig, ShopRoiStrategy, SimConfig, Simulator, WallSimConfig,
-    WallTimeSimulator,
+    ApkRules, ApproxRules, EarlyCompeteStrategy, GameData, GreedyKpStrategy, OptimizerConfig,
+    PolicyConfig, ShopRoiStrategy, SimConfig, SimulationConfigFile, Simulator, WallSimConfig,
+    WallTimeSimulator, audit_curves, optimize_purchase_plans,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -90,6 +92,9 @@ struct RunArgs {
     #[arg(long, default_value_t = 0)]
     training_upgrade_share: u32,
 
+    #[arg(long)]
+    start_config: Option<PathBuf>,
+
     #[arg(long, default_value = "master-league")]
     target: String,
 
@@ -143,7 +148,21 @@ fn main() -> anyhow_free::Result<()> {
 fn run_walltime(args: RunArgs) -> anyhow_free::Result<()> {
     let data = GameData::apk_master();
     let rules = ApkRules::new(&data);
-    let plan = data.preset_plan(&args.plan);
+    let simulation_config = load_simulation_config(args.start_config.as_ref())?;
+    let mut policy_config = simulation_config
+        .as_ref()
+        .and_then(|config| config.policy.clone())
+        .unwrap_or_default();
+    if policy_config.training_upgrade_share.is_none() && args.training_upgrade_share > 0 {
+        policy_config.training_upgrade_share = Some(args.training_upgrade_share.min(10_000));
+    }
+    validate_policy_config(&data, &policy_config)?;
+    let plan_name = policy_config
+        .purchase_plan
+        .as_deref()
+        .unwrap_or(args.plan.as_str());
+    validate_purchase_plan(&data, plan_name)?;
+    let plan = data.preset_plan(plan_name);
     let sim = WallTimeSimulator::new(
         rules,
         data,
@@ -152,18 +171,21 @@ fn run_walltime(args: RunArgs) -> anyhow_free::Result<()> {
             max_wall_days: args.max_days,
             max_sessions_per_day: args.sessions_per_day,
             target_league: target_league(&args.target),
+            karpador_loss_risk_max_level_percent: policy_config
+                .karpador_loss_risk_max_level_percent
+                .map(|value| value.min(100)),
             ..WallSimConfig::default()
         },
     );
-    let result = if args.training_upgrade_share > 0 {
-        let mut policy = karpador_sim::ActivePlayerPolicy::with_purchase_plan_and_training_share(
-            plan,
-            args.training_upgrade_share.min(10_000),
-        );
-        sim.run_with_policy(args.seed, &mut policy)
-    } else {
-        sim.run(args.seed, plan)
-    };
+    let mut policy =
+        karpador_sim::ActivePlayerPolicy::with_purchase_plan_and_config(plan, Some(&policy_config));
+    let result = sim.run_with_policy_from_config(
+        args.seed,
+        &mut policy,
+        simulation_config
+            .as_ref()
+            .and_then(|config| config.start_state.as_ref()),
+    )?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -188,6 +210,51 @@ fn run_walltime(args: RunArgs) -> anyhow_free::Result<()> {
         }
         for warning in &result.warnings {
             println!("warning:       {warning}");
+        }
+    }
+    Ok(())
+}
+
+fn load_simulation_config(
+    path: Option<&PathBuf>,
+) -> anyhow_free::Result<Option<SimulationConfigFile>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(path)?;
+    Ok(Some(serde_json::from_str(&contents)?))
+}
+
+fn validate_purchase_plan(data: &GameData, name_or_json: &str) -> anyhow_free::Result<()> {
+    if !name_or_json.trim_start().starts_with('[') {
+        return Ok(());
+    }
+    let ids = serde_json::from_str::<Vec<String>>(name_or_json)?;
+    for id in ids {
+        if data.target_by_id(&id).is_none() {
+            return Err(format!("unknown purchase_plan id in start_config: {id}").into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_policy_config(data: &GameData, config: &PolicyConfig) -> anyhow_free::Result<()> {
+    if let Some(ids) = &config.allowed_berry_upgrades {
+        for id in ids {
+            if !data.berries.iter().any(|berry| berry.id == id) {
+                return Err(
+                    format!("unknown allowed_berry_upgrades id in start_config: {id}").into(),
+                );
+            }
+        }
+    }
+    if let Some(ids) = &config.allowed_training_upgrades {
+        for id in ids {
+            if !data.trainings.iter().any(|training| training.id == id) {
+                return Err(
+                    format!("unknown allowed_training_upgrades id in start_config: {id}").into(),
+                );
+            }
         }
     }
     Ok(())

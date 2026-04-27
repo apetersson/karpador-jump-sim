@@ -13,6 +13,7 @@ use crate::player_policy::{
     WallAction, WallTimePolicy,
 };
 use crate::rules::Rules;
+use crate::start_config::StartStateConfig;
 
 #[derive(Clone, Debug)]
 pub struct WallSimConfig {
@@ -20,6 +21,7 @@ pub struct WallSimConfig {
     pub max_wall_days: u32,
     pub max_sessions_per_day: u8,
     pub target_league: u32,
+    pub karpador_loss_risk_max_level_percent: Option<u32>,
 }
 
 impl Default for WallSimConfig {
@@ -29,6 +31,7 @@ impl Default for WallSimConfig {
             max_wall_days: 240,
             max_sessions_per_day: 10,
             target_league: 10,
+            karpador_loss_risk_max_level_percent: None,
         }
     }
 }
@@ -110,8 +113,28 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     pub fn run_with_policy<P: WallTimePolicy>(&self, seed: u64, policy: &mut P) -> WallSimResult {
+        self.run_with_policy_inner(seed, policy, None)
+            .expect("default initial wall state should be valid")
+    }
+
+    pub fn run_with_policy_from_config<P: WallTimePolicy>(
+        &self,
+        seed: u64,
+        policy: &mut P,
+        start_config: Option<&StartStateConfig>,
+    ) -> Result<WallSimResult, String> {
+        self.run_with_policy_inner(seed, policy, start_config)
+    }
+
+    fn run_with_policy_inner<P: WallTimePolicy>(
+        &self,
+        seed: u64,
+        policy: &mut P,
+        start_config: Option<&StartStateConfig>,
+    ) -> Result<WallSimResult, String> {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut state = self.initial_wall_state(&mut rng);
+        let (mut state, mut config_warnings) =
+            self.initial_wall_state_from_config(&mut rng, start_config)?;
         let mut purchases = Vec::new();
         let mut action_log = Vec::new();
         let mut session_count = 0_u32;
@@ -241,12 +264,13 @@ impl<R: Rules> WallTimeSimulator<R> {
         };
         let wall_days = state.now() as f64 / WallClock::MINUTES_PER_DAY as f64;
         let mut warnings = self.data.audit().warnings;
+        warnings.append(&mut config_warnings);
         if purchases.is_empty() {
             warnings.push("no diamond purchases were affordable/reached for this plan".to_string());
         }
         let diamond_income_by_source = summarize_diamond_income(&state.diamond_ledger);
 
-        WallSimResult {
+        Ok(WallSimResult {
             seed,
             plan: plan_name,
             dataset: self.data.name,
@@ -259,7 +283,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             final_state: state,
             invalid_policy_action,
             warnings,
-        }
+        })
     }
 
     fn initial_wall_state(&self, rng: &mut impl Rng) -> GameState {
@@ -350,6 +374,185 @@ impl<R: Rules> WallTimeSimulator<R> {
         state
     }
 
+    fn initial_wall_state_from_config(
+        &self,
+        rng: &mut impl Rng,
+        config: Option<&StartStateConfig>,
+    ) -> Result<(GameState, Vec<String>), String> {
+        let mut state = self.initial_wall_state(rng);
+        let Some(config) = config else {
+            return Ok((state, Vec::new()));
+        };
+        let mut warnings = Vec::new();
+
+        if let Some(rank) = config.player_rank {
+            state.player_rank = rank.max(1);
+            if let Some(row) = self
+                .data
+                .breeder_ranks
+                .iter()
+                .find(|row| row.rank == state.player_rank)
+            {
+                state.trainer_exp = state.trainer_exp.max(row.need_exp.value);
+            }
+            state.magikarp.max_level = self.rules.max_level_for_rank(state.player_rank);
+            state.max_stamina = state.max_stamina.max(3 + state.player_rank / 2);
+            state.stamina = state.stamina.min(state.max_stamina);
+        }
+        if let Some(gold) = config.gold {
+            state.coins = gold;
+        }
+        if let Some(diamonds) = config.diamonds {
+            state.diamonds = 0;
+            state.diamond_ledger.clear();
+            self.credit_diamonds(
+                &mut state,
+                diamonds,
+                DiamondSource::Tutorial,
+                "start config wallet".to_string(),
+                Provenance::Assumption,
+            );
+        }
+        if let Some(league) = config.league {
+            if league as usize >= self.data.leagues.len() {
+                return Err(format!("unknown league index in start_config: {league}"));
+            }
+            state.league = league;
+        }
+        if let Some(competition) = config.competition {
+            let max_competitions = self
+                .data
+                .leagues
+                .get(state.league as usize)
+                .map(|league| league.competitions.len() as u32)
+                .unwrap_or(0);
+            if competition >= max_competitions {
+                return Err(format!(
+                    "unknown competition index {competition} for league {} in start_config",
+                    state.league
+                ));
+            }
+            state.competition = competition;
+        }
+        if let Some(generation) = config.generation {
+            state.generation = generation.max(1);
+        }
+        if let Some(retirements) = config.retirements {
+            state.retirements = retirements;
+        }
+        if let Some(candy) = config.candy {
+            state.candy = candy;
+        }
+        if let Some(training_sodas) = config.training_sodas {
+            state.training_sodas = training_sodas;
+        }
+        if let Some(skill_herbs) = config.skill_herbs {
+            state.skill_herbs = skill_herbs;
+        }
+        if let Some(league_aids) = config.league_aids {
+            state.league_aids = league_aids;
+        }
+
+        for support_id in &config.owned_supports {
+            let Some(index) = state
+                .supports
+                .iter()
+                .position(|support| support.id == support_id)
+            else {
+                return Err(format!("unknown support id in start_config: {support_id}"));
+            };
+            state.supports[index].owned = true;
+            state.supports[index].ready_at = state.now();
+        }
+        for decor_id in &config.owned_decors {
+            let Some(index) = state.decors.iter().position(|decor| decor.id == decor_id) else {
+                return Err(format!("unknown decor id in start_config: {decor_id}"));
+            };
+            if !state.decors[index].owned {
+                state.decors[index].owned = true;
+                self.apply_decor_on_acquire(&mut state, decor_id);
+            }
+        }
+        for (berry_id, level) in &config.berry_levels {
+            let Some(index) = state.berries.iter().position(|berry| berry.id == berry_id) else {
+                return Err(format!("unknown berry id in start_config: {berry_id}"));
+            };
+            let max_level = self.data.berries[index].max_level.max(1);
+            let clamped = (*level).clamp(1, max_level);
+            if clamped != *level {
+                warnings.push(format!(
+                    "berry {berry_id} level {} clamped to max level {clamped}",
+                    level
+                ));
+            }
+            state.berries[index].level = clamped;
+        }
+        for (training_id, level) in &config.training_levels {
+            let Some(index) = state
+                .trainings
+                .iter()
+                .position(|training| training.id == training_id)
+            else {
+                return Err(format!(
+                    "unknown training id in start_config: {training_id}"
+                ));
+            };
+            let max_level = self.training_max_level();
+            let clamped = (*level).clamp(1, max_level);
+            if clamped != *level {
+                warnings.push(format!(
+                    "training {training_id} level {} clamped to max level {clamped}",
+                    level
+                ));
+            }
+            state.trainings[index].level = clamped;
+        }
+        state.food_level = state
+            .berries
+            .iter()
+            .map(|berry| berry.level)
+            .min()
+            .unwrap_or(1);
+        state.training_level = state
+            .trainings
+            .iter()
+            .take(2)
+            .map(|training| training.level)
+            .min()
+            .unwrap_or(1);
+
+        if let Some(kp) = config.magikarp_kp {
+            state.magikarp.kp = kp;
+            state.magikarp.level = self
+                .rules
+                .level_for_kp(state.magikarp.kp, state.magikarp.max_level);
+        }
+        if let Some(level) = config.magikarp_level {
+            let clamped = level.clamp(1, state.magikarp.max_level);
+            if clamped != level {
+                warnings.push(format!(
+                    "magikarp_level {level} clamped to max_level {clamped}"
+                ));
+            }
+            state.magikarp.level = clamped;
+            state.magikarp.kp = state.magikarp.kp.max(self.rules.need_kp_for_level(clamped));
+        }
+        state.magikarp.max_level = self.rules.max_level_for_rank(state.player_rank);
+        if state.magikarp.level > state.magikarp.max_level {
+            warnings.push(format!(
+                "magikarp level {} clamped to max_level {}",
+                state.magikarp.level, state.magikarp.max_level
+            ));
+            state.magikarp.level = state.magikarp.max_level;
+            state.magikarp.kp = state
+                .magikarp
+                .kp
+                .min(self.rules.need_kp_for_level(state.magikarp.max_level));
+        }
+
+        Ok((state, warnings))
+    }
+
     fn start_next_session(&self, state: &mut GameState) -> bool {
         if self.config.max_sessions_per_day == 0 {
             return false;
@@ -432,11 +635,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 next = next.min(support.ready_at);
             }
         }
-        if next == u64::MAX {
-            now + 60
-        } else {
-            next
-        }
+        if next == u64::MAX { now + 60 } else { next }
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
@@ -1450,7 +1649,9 @@ impl<R: Rules> WallTimeSimulator<R> {
         let mut branch = "normal";
         let detail = if event.id == 1002 {
             self.fill_home_food(state)
-        } else if risk_reward && !retirement_risk {
+        } else if risk_reward
+            && (!retirement_risk || self.should_take_random_event_retirement_risk(state))
+        {
             if rng.random_range(0..10_000) < event.success_chance_permyriad {
                 branch = "success";
                 self.apply_random_event_effect(
@@ -1481,6 +1682,13 @@ impl<R: Rules> WallTimeSimulator<R> {
             "{} #{}: {} ({branch}, {:?})",
             event.name, event.id, detail, occurrence
         ))
+    }
+
+    fn should_take_random_event_retirement_risk(&self, state: &GameState) -> bool {
+        let Some(percent) = self.config.karpador_loss_risk_max_level_percent else {
+            return false;
+        };
+        state.magikarp.level.saturating_mul(100) <= state.magikarp.max_level.saturating_mul(percent)
     }
 
     fn refresh_random_event_day(&self, state: &mut GameState) {
@@ -2501,6 +2709,19 @@ mod tests {
     use super::*;
     use crate::data::GameData;
     use crate::rules::{ApkRules, ApproxRules};
+    use crate::start_config::{PolicyConfig, StartStateConfig};
+
+    struct StopPolicy;
+
+    impl WallTimePolicy for StopPolicy {
+        fn name(&self) -> &'static str {
+            "stop"
+        }
+
+        fn choose_action(&mut self, _context: &DecisionContext<'_>) -> PolicyDecision {
+            PolicyDecision::EndSession
+        }
+    }
 
     fn sim() -> WallTimeSimulator<ApproxRules> {
         WallTimeSimulator::new(ApproxRules, GameData::approx_v1(), WallSimConfig::default())
@@ -2536,34 +2757,235 @@ mod tests {
     }
 
     #[test]
+    fn start_config_applies_wallet_inventory_and_levels() {
+        let data = GameData::apk_master();
+        let simulator =
+            WallTimeSimulator::new(ApkRules::new(&data), data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let config = StartStateConfig {
+            player_rank: Some(12),
+            gold: Some(12_345),
+            diamonds: Some(300),
+            league: Some(1),
+            competition: Some(2),
+            generation: Some(5),
+            retirements: Some(4),
+            magikarp_level: Some(8),
+            candy: Some(3),
+            training_sodas: Some(2),
+            skill_herbs: Some(1),
+            owned_supports: vec!["pikachu".to_string()],
+            owned_decors: vec!["shaymin_planter".to_string()],
+            berry_levels: [("food_1".to_string(), 7)].into(),
+            training_levels: [("training_1".to_string(), 6)].into(),
+            ..StartStateConfig::default()
+        };
+
+        let (state, warnings) = simulator
+            .initial_wall_state_from_config(&mut rng, Some(&config))
+            .unwrap();
+
+        assert!(warnings.is_empty());
+        assert_eq!(state.player_rank, 12);
+        assert_eq!(state.coins, 12_345);
+        assert_eq!(state.diamonds, 300);
+        assert_eq!(state.league, 1);
+        assert_eq!(state.competition, 2);
+        assert_eq!(state.generation, 5);
+        assert_eq!(state.retirements, 4);
+        assert_eq!(state.magikarp.level, 8);
+        assert_eq!(state.candy, 3);
+        assert_eq!(state.training_sodas, 2);
+        assert_eq!(state.skill_herbs, 1);
+        assert!(
+            state
+                .supports
+                .iter()
+                .any(|item| item.id == "pikachu" && item.owned)
+        );
+        assert!(
+            state
+                .decors
+                .iter()
+                .any(|item| item.id == "shaymin_planter" && item.owned)
+        );
+        assert_eq!(
+            state
+                .berries
+                .iter()
+                .find(|item| item.id == "food_1")
+                .unwrap()
+                .level,
+            7
+        );
+        assert_eq!(
+            state
+                .trainings
+                .iter()
+                .find(|item| item.id == "training_1")
+                .unwrap()
+                .level,
+            6
+        );
+    }
+
+    #[test]
+    fn start_config_rejects_unknown_ids() {
+        let simulator = sim();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let config = StartStateConfig {
+            owned_supports: vec!["missingno".to_string()],
+            ..StartStateConfig::default()
+        };
+
+        let error = simulator
+            .initial_wall_state_from_config(&mut rng, Some(&config))
+            .unwrap_err();
+
+        assert!(error.contains("unknown support id"));
+    }
+
+    #[test]
+    fn policy_config_blocks_disallowed_items_and_upgrades() {
+        let mut policy = ActivePlayerPolicy::with_purchase_plan_and_config(
+            PurchasePlan {
+                name: "none".to_string(),
+                targets: Vec::new(),
+            },
+            Some(&PolicyConfig {
+                allow_training_sodas: Some(false),
+                allowed_berry_upgrades: Some(vec!["food_2".to_string()]),
+                allowed_training_upgrades: Some(Vec::new()),
+                ..PolicyConfig::default()
+            }),
+        );
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = sim().initial_wall_state(&mut rng);
+        state.stamina = 0;
+        state.training_sodas = 1;
+        state.coins = 1_000_000;
+
+        let actions = vec![
+            available(
+                WallAction::UseTrainingSoda,
+                "training soda can recover stamina",
+            ),
+            available_with_coin_cost(
+                WallAction::UpgradeBerry {
+                    berry_id: "food_1".to_string(),
+                },
+                "berry upgrade is affordable",
+                10,
+            ),
+            available_with_coin_cost(
+                WallAction::UpgradeTraining {
+                    training_id: "training_1".to_string(),
+                },
+                "starter training upgrade is affordable",
+                10,
+            ),
+        ];
+
+        assert_eq!(
+            policy.choose_action(&DecisionContext {
+                state: &state,
+                available_actions: &actions,
+            }),
+            PolicyDecision::EndSession
+        );
+    }
+
+    #[test]
+    fn policy_config_limits_intentional_loss_by_level_percent() {
+        let plan = PurchasePlan {
+            name: "none".to_string(),
+            targets: Vec::new(),
+        };
+        let mut high_level_policy = ActivePlayerPolicy::with_purchase_plan_and_config(
+            plan.clone(),
+            Some(&PolicyConfig {
+                karpador_loss_risk_max_level_percent: Some(50),
+                ..PolicyConfig::default()
+            }),
+        );
+        let mut low_level_policy = ActivePlayerPolicy::with_purchase_plan_and_config(
+            plan,
+            Some(&PolicyConfig {
+                karpador_loss_risk_max_level_percent: Some(50),
+                ..PolicyConfig::default()
+            }),
+        );
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = sim().initial_wall_state(&mut rng);
+        state.magikarp.max_level = 10;
+        state.magikarp.level = 8;
+        let actions = vec![available(
+            WallAction::LeagueFight {
+                intent: LeagueFightIntent::IntentionallyLose,
+            },
+            "league champion fight can be intentionally lost",
+        )];
+
+        assert_eq!(
+            high_level_policy.choose_action(&DecisionContext {
+                state: &state,
+                available_actions: &actions,
+            }),
+            PolicyDecision::EndSession
+        );
+
+        state.magikarp.level = 5;
+        assert!(matches!(
+            low_level_policy.choose_action(&DecisionContext {
+                state: &state,
+                available_actions: &actions,
+            }),
+            PolicyDecision::Execute(WallAction::LeagueFight {
+                intent: LeagueFightIntent::IntentionallyLose
+            })
+        ));
+    }
+
+    #[test]
+    fn simulator_config_limits_random_event_retirement_risk_by_level_percent() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(
+            ApproxRules,
+            data,
+            WallSimConfig {
+                karpador_loss_risk_max_level_percent: Some(40),
+                ..WallSimConfig::default()
+            },
+        );
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        state.magikarp.max_level = 10;
+        state.magikarp.level = 5;
+        assert!(!simulator.should_take_random_event_retirement_risk(&state));
+        state.magikarp.level = 4;
+        assert!(simulator.should_take_random_event_retirement_risk(&state));
+    }
+
+    #[test]
     fn custom_policy_controls_player_decisions() {
-        struct StopPolicy;
-
-        impl WallTimePolicy for StopPolicy {
-            fn name(&self) -> &'static str {
-                "stop"
-            }
-
-            fn choose_action(&mut self, _context: &DecisionContext<'_>) -> PolicyDecision {
-                PolicyDecision::EndSession
-            }
-        }
-
         let data = GameData::approx_v1();
         let config = WallSimConfig {
             max_wall_days: 1,
             max_actions: 100,
             max_sessions_per_day: 10,
             target_league: 4,
+            ..WallSimConfig::default()
         };
         let simulator = WallTimeSimulator::new(ApproxRules, data.clone(), config);
         let mut policy = StopPolicy;
         let result = simulator.run_with_policy(7, &mut policy);
         assert_eq!(result.final_state.action_count, 0);
-        assert!(result
-            .action_log
-            .iter()
-            .all(|entry| entry.event != "train" && entry.event != "eat_berries"));
+        assert!(
+            result
+                .action_log
+                .iter()
+                .all(|entry| entry.event != "train" && entry.event != "eat_berries")
+        );
     }
 
     #[test]
@@ -2591,6 +3013,7 @@ mod tests {
             max_actions: 100,
             max_sessions_per_day: 10,
             target_league: 4,
+            ..WallSimConfig::default()
         };
         let simulator = WallTimeSimulator::new(ApproxRules, data, config);
         let mut policy = InvalidPolicy;
@@ -2612,9 +3035,11 @@ mod tests {
         let actions = simulator.available_actions(&state);
         assert!(!actions.is_empty());
         for available in &actions {
-            assert!(actions
-                .iter()
-                .any(|candidate| candidate.action == available.action));
+            assert!(
+                actions
+                    .iter()
+                    .any(|candidate| candidate.action == available.action)
+            );
         }
     }
 
@@ -2626,6 +3051,7 @@ mod tests {
             max_actions: 10_000,
             max_sessions_per_day: 10,
             target_league: 4,
+            ..WallSimConfig::default()
         };
         let result = WallTimeSimulator::new(ApproxRules, data.clone(), config)
             .run(11, data.preset_plan("none"));
@@ -2641,6 +3067,7 @@ mod tests {
             max_actions: 10_000,
             max_sessions_per_day: 10,
             target_league: 99,
+            ..WallSimConfig::default()
         };
         let result = WallTimeSimulator::new(ApproxRules, data.clone(), config)
             .run(11, data.preset_plan("none"));
@@ -2667,6 +3094,7 @@ mod tests {
                 max_actions: 100,
                 max_sessions_per_day: 10,
                 target_league: 1,
+                ..WallSimConfig::default()
             },
         );
         assert_eq!(simulator.food_spawns_per_minute_tick(), 3);
@@ -2702,9 +3130,11 @@ mod tests {
 
         assert_eq!(state.now(), before_minute);
         assert!(simulator.total_food_available(&state) > before_food);
-        assert!(action_log
-            .last()
-            .is_some_and(|entry| entry.detail.contains("berries")));
+        assert!(
+            action_log
+                .last()
+                .is_some_and(|entry| entry.detail.contains("berries"))
+        );
 
         let berry_id = state
             .berries
@@ -2762,10 +3192,11 @@ mod tests {
     fn plan_contains_only_support_and_decor_targets() {
         let data = GameData::approx_v1();
         let plan = data.preset_plan("balanced");
-        assert!(plan
-            .targets
-            .iter()
-            .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor)));
+        assert!(
+            plan.targets
+                .iter()
+                .all(|target| matches!(target.kind, PurchaseKind::Support | PurchaseKind::Decor))
+        );
     }
 
     #[test]
@@ -2790,46 +3221,60 @@ mod tests {
         let result = sim().run(42, data.preset_plan("balanced"));
         assert!(result.final_state.pending_diamond_rewards.is_empty());
         assert_eq!(result.final_state.pending_achievement_claims, 0);
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::Tutorial));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::TrainerRank));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::LeagueBattleReward));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::Achievement));
-        assert!(result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.source == DiamondSource::PatternDiscovery));
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::Tutorial)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::TrainerRank)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::LeagueBattleReward)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::Achievement)
+        );
+        assert!(
+            result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.source == DiamondSource::PatternDiscovery)
+        );
     }
 
     #[test]
     fn feeding_and_training_achievements_do_not_award_diamonds() {
         let data = GameData::approx_v1();
         let result = sim().run(42, data.preset_plan("balanced"));
-        assert!(!result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.detail.starts_with("times fed")));
-        assert!(!result
-            .final_state
-            .diamond_ledger
-            .iter()
-            .any(|entry| entry.detail.starts_with("times trained")));
+        assert!(
+            !result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.detail.starts_with("times fed"))
+        );
+        assert!(
+            !result
+                .final_state
+                .diamond_ledger
+                .iter()
+                .any(|entry| entry.detail.starts_with("times trained"))
+        );
     }
 }

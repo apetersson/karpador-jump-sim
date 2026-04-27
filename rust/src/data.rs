@@ -799,9 +799,8 @@ impl GameData {
         let asset_src = "decoded APK master_data_enc JSON recovered via Ghidra ResourceUtils";
         let disasm_src = "Ghidra: libMyGame.so ResourceUtils/MagicarpData/CompetitionManager";
 
-        let food_base: Vec<FoodBaseRow> = json_rows(include_str!(
-            "../decoded_master_data/food_base_data.json"
-        ));
+        let food_base: Vec<FoodBaseRow> =
+            json_rows(include_str!("../decoded_master_data/food_base_data.json"));
         let food_power: Vec<LevelTableRow> =
             json_rows(include_str!("../decoded_master_data/food_power.json"));
         let food_price: Vec<LevelTableRow> =
@@ -812,19 +811,16 @@ impl GameData {
         let training_min_power: Vec<LevelTableRow> = json_rows(include_str!(
             "../decoded_master_data/training_min_power.json"
         ));
-        let training_price: Vec<LevelTableRow> = json_rows(include_str!(
-            "../decoded_master_data/training_price.json"
-        ));
-        let support_rows: Vec<SupportPokemonRow> = json_rows(include_str!(
-            "../decoded_master_data/support_pokemon.json"
-        ));
+        let training_price: Vec<LevelTableRow> =
+            json_rows(include_str!("../decoded_master_data/training_price.json"));
+        let support_rows: Vec<SupportPokemonRow> =
+            json_rows(include_str!("../decoded_master_data/support_pokemon.json"));
         let decor_rows: Vec<DecorationRow> =
             json_rows(include_str!("../decoded_master_data/decoration.json"));
         let league_rows: Vec<LeagueRow> =
             json_rows(include_str!("../decoded_master_data/league_list.json"));
-        let competition_rows: Vec<CompetitionRow> = json_rows(include_str!(
-            "../decoded_master_data/competition_list.json"
-        ));
+        let competition_rows: Vec<CompetitionRow> =
+            json_rows(include_str!("../decoded_master_data/competition_list.json"));
         let breeder_rows: Vec<BreederRankRow> =
             json_rows(include_str!("../decoded_master_data/breeder_rank.json"));
         let magikarp_rows: Vec<MagikarpRankRow> =
@@ -832,9 +828,8 @@ impl GameData {
         let jump_rows: Vec<JumpCurveRow> = json_rows(include_str!(
             "../decoded_master_data/kp_to_jump_height.json"
         ));
-        let other_rows: Vec<OtherParametersRow> = json_rows(include_str!(
-            "../decoded_master_data/other_parameters.json"
-        ));
+        let other_rows: Vec<OtherParametersRow> =
+            json_rows(include_str!("../decoded_master_data/other_parameters.json"));
         let treasure_rows: Vec<TreasureRow> =
             json_rows(include_str!("../decoded_master_data/treasure_data.json"));
         let random_event_rows: Vec<RandomEventRow> = json_rows(include_str!(
@@ -1528,22 +1523,42 @@ impl GameData {
         count(self.economy.home_food_max.provenance);
         count(self.economy.manaphy_food_num.provenance);
         count(self.economy.stamina_respawn_minutes.provenance);
-        count(self.random_event_parameters.training_chance_permyriad.provenance);
+        count(
+            self.random_event_parameters
+                .training_chance_permyriad
+                .provenance,
+        );
         count(self.random_event_parameters.training_max_per_day.provenance);
         count(
             self.random_event_parameters
                 .league_win_chance_permyriad
                 .provenance,
         );
-        count(self.random_event_parameters.league_win_max_per_day.provenance);
+        count(
+            self.random_event_parameters
+                .league_win_max_per_day
+                .provenance,
+        );
         count(
             self.random_event_parameters
                 .league_loss_chance_permyriad
                 .provenance,
         );
-        count(self.random_event_parameters.league_loss_max_per_day.provenance);
-        count(self.random_event_parameters.home_chance_permyriad.provenance);
-        count(self.random_event_parameters.home_cooldown_minutes.provenance);
+        count(
+            self.random_event_parameters
+                .league_loss_max_per_day
+                .provenance,
+        );
+        count(
+            self.random_event_parameters
+                .home_chance_permyriad
+                .provenance,
+        );
+        count(
+            self.random_event_parameters
+                .home_cooldown_minutes
+                .provenance,
+        );
         count(
             self.random_event_parameters
                 .home_max_cooldown_minutes

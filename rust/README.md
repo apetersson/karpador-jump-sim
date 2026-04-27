@@ -15,6 +15,12 @@ The simulator now has two layers:
 cargo run -- run --plan balanced --seed 42 --max-days 240
 ```
 
+Start from a saved/provided game state and policy direction:
+
+```sh
+cargo run -- run --start-config examples/start_config.json --seed 42 --max-days 240
+```
+
 JSON output:
 
 ```sh
@@ -59,6 +65,15 @@ The v1 policy models the requested F2P player:
 - Training happens before berry eating when stamina is available.
 - At least 3 berries are eaten before league attempts.
 - Each league gets exactly one intentional loss, at the last fight/Champion. After that loss, the current Magikarp is brought to max level before forced league progress resumes.
+
+## Start config
+
+`run --start-config <file.json>` accepts a JSON file with two optional blocks:
+
+- `start_state`: patches the initial wall-time state, including `player_rank`, `gold`/`coins`, `diamonds`, `league`, `competition`, inventory items, owned supports/decors, berry levels, training levels, and current Magikarp level/KP.
+- `policy`: adjusts the active player policy, including `purchase_plan`, item usage flags, support upgrades, allowed berry/training upgrades, `training_upgrade_share`, and `karpador_loss_risk_max_level_percent`.
+
+IDs are validated against the loaded master data. Invalid support, decor, berry, training, or JSON purchase-plan IDs abort the run with a clear error. League and competition values use the simulator's zero-based indices, matching `final_state.league` and `final_state.competition` in JSON output.
 
 ## Structure
 

@@ -5,6 +5,7 @@ pub mod optimizer;
 pub mod player_policy;
 pub mod rules;
 pub mod sim;
+pub mod start_config;
 pub mod strategy;
 pub mod walltime;
 
@@ -24,6 +25,7 @@ pub use player_policy::{
 };
 pub use rules::{ApkRules, ApproxRules, Rules, TrainingResult};
 pub use sim::{ExperimentReport, RunOutcome, SimConfig, SimResult, Simulator};
+pub use start_config::{PolicyConfig, SimulationConfigFile, StartStateConfig};
 pub use strategy::{EarlyCompeteStrategy, GreedyKpStrategy, ShopRoiStrategy, Strategy};
 pub use walltime::{
     InvalidPolicyAction, WallRunOutcome, WallSimConfig, WallSimResult, WallTimeSimulator,
