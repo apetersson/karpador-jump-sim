@@ -419,7 +419,7 @@ export interface WebAssemblyRuntimeApi {
 }
 
 export const loadRuntimeApi = async (): Promise<RuntimeApi> => {
-  const module = (await importRuntimeModule('/wasm/karpador_sim.js')) as unknown as WebAssemblyRuntimeApi;
+  const module = (await importRuntimeModule('wasm/karpador_sim.js')) as unknown as WebAssemblyRuntimeApi;
   if (typeof module.default === 'function') {
     await module.default();
   }
