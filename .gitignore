@@ -2,6 +2,7 @@ target/
 .DS_Store
 web/public/wasm/
 web/node_modules/
+web/dist/
 
 # Local autoresearch run artifacts; do not commit.
 research-results.tsv

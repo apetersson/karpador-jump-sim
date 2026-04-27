@@ -909,8 +909,25 @@ const safeCopyValue = <T,>(obj: T): T => JSON.parse(JSON.stringify(obj));
 const createDefaultLevelMap = (items: CatalogItem[], value = 1): Record<string, number> =>
   Object.fromEntries(items.map((entry) => [String(entry.id), value]));
 
+const createLevelMapWithOverrides = (
+  items: CatalogItem[],
+  overrides: Record<string, number>,
+  fallback = 1,
+): Record<string, number> =>
+  Object.fromEntries(
+    items.map((entry) => [
+      String(entry.id),
+      overrides[entry.id] ?? fallback,
+    ]),
+  );
+
 const createDefaultEnabledMap = (items: CatalogItem[], count = 0): Record<string, boolean> =>
   Object.fromEntries(items.map((entry, index) => [String(entry.id), index < count]));
+
+const createEnabledMapByIds = (items: CatalogItem[], enabledIds: string[]): Record<string, boolean> => {
+  const enabled = new Set(enabledIds.map((id) => String(id)));
+  return Object.fromEntries(items.map((entry) => [String(entry.id), enabled.has(entry.id)]));
+};
 
 const normalizeUpgradeId = (prefix: 'food' | 'training', id: string): string => {
   if (id.startsWith(`${prefix}_`)) {
@@ -1132,6 +1149,18 @@ function App() {
           leagues: leaguesWithMeta,
         });
 
+        const targetInitialBerryLevels = createLevelMapWithOverrides(berries, {
+          food_1: 15,
+          food_2: 14,
+        });
+        const targetInitialTrainingLevels = createLevelMapWithOverrides(trainings, {
+          training_1: 13,
+          training_2: 13,
+        });
+
+        const targetAllowedBerryUpgrades = ['food_1', 'food_2', 'food_6'];
+        const targetAllowedTrainingUpgrades = ['training_1', 'training_2'];
+
         setForm({
           start_state: {
             player_rank: 25,
@@ -1149,20 +1178,21 @@ function App() {
             league_aids: 0,
             owned_supports: Array.from(
               new Set([
-                'pikachu',
-                'charizard',
+                ...['pikachu', 'charizard', 'piplup', 'meowth'].map((id) => toSupportTargetId(id)),
                 ...unlockedSupports.map((id) => toSupportTargetId(id)),
               ]),
             ),
-            owned_decors: Array.from(new Set(['shaymin_planter', ...unlockedDecors.map((id) => toDecorTargetId(id))])),
-            berry_levels: createDefaultLevelMap(berries, 1),
-            training_levels: createDefaultLevelMap(trainings, 1),
-            berry_enabled: createDefaultEnabledMap(berries, 2),
-            training_enabled: createDefaultEnabledMap(trainings, 2),
+            owned_decors: Array.from(
+              new Set(['shaymin_planter', 'octillery_pot', ...unlockedDecors.map((id) => toDecorTargetId(id))]),
+            ),
+            berry_levels: targetInitialBerryLevels,
+            training_levels: targetInitialTrainingLevels,
+            berry_enabled: createEnabledMapByIds(berries, targetAllowedBerryUpgrades),
+            training_enabled: createEnabledMapByIds(trainings, targetAllowedTrainingUpgrades),
           },
           policy: {
-            allowed_berry_upgrades: selectedUpgradeIds(createDefaultEnabledMap(berries, 2)),
-            allowed_training_upgrades: selectedUpgradeIds(createDefaultEnabledMap(trainings, 2)),
+            allowed_berry_upgrades: [...targetAllowedBerryUpgrades],
+            allowed_training_upgrades: [...targetAllowedTrainingUpgrades],
             purchase_plan: 'custom',
             allow_training_sodas: true,
             allow_skill_herbs: true,
