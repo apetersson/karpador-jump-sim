@@ -262,6 +262,95 @@ impl ActivePlayerPolicy {
             .map(|(_, action)| action)
     }
 
+    fn any_berry_upgrade_action(
+        state: &GameState,
+        actions: &[AvailableAction],
+        allow_only_explicit: bool,
+        allowed: Option<&Vec<String>>,
+    ) -> Option<WallAction> {
+        actions
+            .iter()
+            .filter_map(|available| match &available.action {
+                WallAction::UpgradeBerry { berry_id } => {
+                    if allow_only_explicit && !id_allowed_ref(allowed, berry_id) {
+                        return None;
+                    }
+                    state
+                        .berries
+                        .iter()
+                        .find(|berry| berry.id == berry_id)
+                        .map(|berry| (berry.level, berry.id, available.action.clone()))
+                }
+                _ => None,
+            })
+            .min_by_key(|(level, id, _)| (*level, *id))
+            .map(|(_, _, action)| action)
+    }
+
+    fn any_training_upgrade_action(
+        actions: &[AvailableAction],
+        allow_only_explicit: bool,
+        allowed: Option<&Vec<String>>,
+    ) -> Option<WallAction> {
+        actions
+            .iter()
+            .filter_map(|available| match &available.action {
+                WallAction::UpgradeTraining { training_id } => {
+                    if allow_only_explicit && !id_allowed_ref(allowed, training_id) {
+                        return None;
+                    }
+                    Some((training_id.as_str(), available.action.clone()))
+                }
+                _ => None,
+            })
+            .min_by_key(|(id, _)| *id)
+            .map(|(_, action)| action)
+    }
+
+    fn allowed_upgrade_action(
+        &self,
+        state: &GameState,
+        actions: &[AvailableAction],
+    ) -> Option<WallAction> {
+        let restrict_berry = self.allowed_berry_upgrades.is_some();
+        let restrict_training = self.allowed_training_upgrades.is_some();
+        if !restrict_berry && !restrict_training {
+            return None;
+        }
+
+        let berry = Self::any_berry_upgrade_action(
+            state,
+            actions,
+            restrict_berry,
+            self.allowed_berry_upgrades.as_ref(),
+        );
+        let training = Self::any_training_upgrade_action(
+            actions,
+            restrict_training,
+            self.allowed_training_upgrades.as_ref(),
+        );
+
+        match (berry, training) {
+            (Some(berry), Some(training)) if self.training_upgrade_share_permyriad > 0 => {
+                self.best_ratio_action(actions, berry, training)
+            }
+            (Some(berry), Some(training)) => {
+                let berry_cost = action_coin_cost(actions, &berry);
+                let training_cost = action_coin_cost(actions, &training);
+                match (berry_cost, training_cost) {
+                    (Some(berry_cost), Some(training_cost)) if berry_cost <= training_cost => Some(berry),
+                    (Some(_), Some(_)) => Some(training),
+                    (Some(_), None) => Some(berry),
+                    (None, Some(_)) => Some(training),
+                    _ => Some(berry),
+                }
+            }
+            (Some(berry), None) => Some(berry),
+            (None, Some(training)) => Some(training),
+            (None, None) => None,
+        }
+    }
+
     fn upgrade_with_ratio(
         &self,
         state: &GameState,
@@ -389,6 +478,9 @@ impl WallTimePolicy for ActivePlayerPolicy {
         if let Some(action) = self.buy_next_plan_item(state, actions) {
             return PolicyDecision::Execute(action);
         }
+        if let Some(action) = self.allowed_upgrade_action(state, actions) {
+            return PolicyDecision::Execute(action);
+        }
         if let Some(action) = self.upgrade_with_ratio(state, actions) {
             return PolicyDecision::Execute(action);
         }
@@ -505,6 +597,12 @@ impl WallTimePolicy for ActivePlayerPolicy {
 fn id_allowed(allowed: &Option<Vec<String>>, id: &str) -> bool {
     allowed
         .as_ref()
+        .map(|ids| ids.iter().any(|allowed| allowed == id))
+        .unwrap_or(true)
+}
+
+fn id_allowed_ref(allowed: Option<&Vec<String>>, id: &str) -> bool {
+    allowed
         .map(|ids| ids.iter().any(|allowed| allowed == id))
         .unwrap_or(true)
 }

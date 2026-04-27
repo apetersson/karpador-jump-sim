@@ -5,6 +5,10 @@ use crate::start_config::{PolicyConfig, SimulationConfigFile};
 use crate::walltime::{WallSimConfig, WallTimeSimulator};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
+use std::collections::BTreeMap;
+
+const MASTER_LEAGUE_INDEX: u32 = 10;
+const MINUTES_PER_DAY: f64 = 1440.0;
 
 /// Run the wall-time simulator in the browser from a JSON start configuration.
 #[wasm_bindgen]
@@ -87,6 +91,7 @@ pub fn run_wall_time_simulation_summary(
     )?;
     let value: serde_json::Value = serde_json::from_str(&result_json)
         .map_err(|error| format!("invalid simulation payload: {error}"))?;
+    let diamond_spending = summarize_diamond_spending(&value);
     let summary = json!({
         "plan": value.get("plan"),
         "outcome": value.get("outcome"),
@@ -95,6 +100,10 @@ pub fn run_wall_time_simulation_summary(
         "warnings": value.get("warnings"),
         "league": value.pointer("/final_state/league"),
         "diamonds": value.pointer("/final_state/diamonds"),
+        "days_to_master_league": derive_days_to_master_league(&value),
+        "diamonds_spent_total": diamond_spending.0,
+        "diamond_spending_by_kind": diamond_spending.1,
+        "diamond_spending_by_item": diamond_spending.2,
     });
     serde_json::to_string_pretty(&summary)
         .map_err(|error| format!("failed serializing simulation summary: {error}"))
@@ -145,6 +154,96 @@ fn validate_policy_config(data: &GameData, config: &PolicyConfig) -> Result<(), 
     Ok(())
 }
 
+fn summarize_diamond_spending(
+    value: &serde_json::Value,
+) -> (u32, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let purchases = value.get("purchases").and_then(|entry| entry.as_array());
+    let mut total = 0_u32;
+    let mut by_kind: BTreeMap<String, u32> = BTreeMap::new();
+    let mut by_item: BTreeMap<(String, String), u32> = BTreeMap::new();
+
+    if let Some(purchases) = purchases {
+        for purchase in purchases {
+            let kind = purchase
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or("support_or_decor")
+                .to_string();
+            let id = purchase
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let Some(price) = purchase
+                .get("price_diamonds")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+            else {
+                continue;
+            };
+            total = total.saturating_add(price);
+            *by_kind.entry(kind.clone()).or_insert(0) += price;
+            *by_item.entry((kind, id)).or_insert(0) += price;
+        }
+    }
+
+    let diamond_spending_by_kind = by_kind
+        .into_iter()
+        .map(|(kind, amount)| json!({ "kind": kind, "amount": amount }))
+        .collect::<Vec<_>>();
+    let diamond_spending_by_item = by_item
+        .into_iter()
+        .map(|((kind, id), amount)| {
+            json!({
+                "kind": kind,
+                "id": id,
+                "amount": amount
+            })
+        })
+        .collect::<Vec<_>>();
+
+    (total, diamond_spending_by_kind, diamond_spending_by_item)
+}
+
+fn derive_days_to_master_league(value: &serde_json::Value) -> Option<f64> {
+    let final_league = value
+        .pointer("/final_state/league")
+        .and_then(|value| value.as_u64())?;
+    let target_league = u64::from(MASTER_LEAGUE_INDEX);
+    if final_league >= target_league {
+        return value.get("wall_days").and_then(|value| value.as_f64());
+    }
+
+    let Some(action_log) = value.pointer("/action_log").and_then(|entry| entry.as_array()) else {
+        return None;
+    };
+
+    for entry in action_log {
+        if entry.get("event").and_then(|value| value.as_str()) != Some("league_fight") {
+            continue;
+        }
+        let Some(detail) = entry.get("detail").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some((_before, after)) = detail.split_once(" -> ") else {
+            continue;
+        };
+        let Some((to_league, _)) = after.split_once('-') else {
+            continue;
+        };
+        let Ok(to_league) = to_league.trim().parse::<u32>() else {
+            continue;
+        };
+        if u64::from(to_league).saturating_sub(1) < target_league {
+            continue;
+        }
+        let minute = entry.get("minute").and_then(|value| value.as_f64())?;
+        return Some(minute / MINUTES_PER_DAY);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +281,20 @@ mod tests {
         assert!(parsed.get("outcome").is_some());
         assert!(parsed.get("wall_days").is_some());
         assert!(parsed.get("sessions").is_some());
+        assert!(parsed.get("diamonds_spent_total").is_some());
+        assert!(parsed.get("days_to_master_league").is_some());
+        assert!(parsed.get("diamond_spending_by_kind").is_some());
+        assert_eq!(
+            parsed.pointer("/diamond_spending_by_kind")
+                .and_then(|value| value.as_array())
+                .is_some(),
+            true
+        );
+        assert!(
+            parsed
+                .get("diamond_spending_by_item")
+                .and_then(|value| value.as_array())
+                .is_some()
+        );
     }
 }

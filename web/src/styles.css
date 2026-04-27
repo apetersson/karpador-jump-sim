@@ -188,3 +188,30 @@ button:hover {
   background: #f5f5fd;
   white-space: pre-wrap;
 }
+
+.progress-wrap {
+  margin-bottom: 12px;
+}
+
+.progress-meta {
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.progress-track {
+  width: 100%;
+  height: 12px;
+  border-radius: 8px;
+  border: 1px solid #cfd6ef;
+  overflow: hidden;
+  background: #edf0ff;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #1f5fcc, #4a7dea);
+  transition: width 120ms linear;
+}

@@ -3,8 +3,9 @@ import {
   useMemo,
   useState,
   ChangeEvent,
+  useRef,
 } from 'react';
-import { loadRuntimeApi, runSimulation, type RuntimeApi, type RuntimeResult } from './runtime';
+import { loadRuntimeApi, type RuntimeApi, type RuntimeResult } from './runtime';
 
 type Language = 'de' | 'en' | 'ja';
 
@@ -449,6 +450,16 @@ const UI_TEXT: Record<
     en: 'Execution error',
     ja: '実行エラー',
   },
+  runtimeProgress: {
+    de: 'Fortschritt',
+    en: 'Progress',
+    ja: '進行状況',
+  },
+  runtimeDays: {
+    de: 'Tage',
+    en: 'days',
+    ja: '日',
+  },
   runtimeResult: {
     de: 'Ergebnis',
     en: 'Result',
@@ -464,6 +475,7 @@ const UI_TEXT: Record<
 type UiTextKey = keyof typeof UI_TEXT;
 
 const t = (key: UiTextKey, language: Language): string => UI_TEXT[key][language];
+const SIMULATION_MAX_DAYS = 240;
 
 const interpolateText = (text: string, values: Record<string, string | number>): string =>
   Object.entries(values).reduce(
@@ -948,6 +960,18 @@ type PolicyStateScalarKey =
   | 'karpador_loss_risk_max_level_percent'
   | 'sessions_per_day';
 
+interface SimulationWorkerMessageSuccess {
+  type: 'success';
+  result: RuntimeResult;
+}
+
+interface SimulationWorkerMessageFailure {
+  type: 'failure';
+  error: string;
+}
+
+type SimulationWorkerMessage = SimulationWorkerMessageSuccess | SimulationWorkerMessageFailure;
+
 function App() {
   const [language, setLanguage] = useState<Language>('de');
   const [options, setOptions] = useState<OptionData>({
@@ -972,8 +996,24 @@ function App() {
   const [runtimeStatus, setRuntimeStatus] = useState<string>('unavailable');
   const [runtimeLoadError, setRuntimeLoadError] = useState('');
   const [simulationRunning, setSimulationRunning] = useState(false);
+  const [simulationProgressDays, setSimulationProgressDays] = useState(0);
   const [simulationError, setSimulationError] = useState('');
   const [simulationResult, setSimulationResult] = useState<RuntimeResult | null>(null);
+  const simulationProgressTimerRef = useRef<number | null>(null);
+  const simulationWorkerRef = useRef<Worker | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (simulationProgressTimerRef.current != null) {
+        clearInterval(simulationProgressTimerRef.current);
+        simulationProgressTimerRef.current = null;
+      }
+      if (simulationWorkerRef.current) {
+        simulationWorkerRef.current.terminate();
+        simulationWorkerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1476,21 +1516,73 @@ function App() {
     setTimeout(() => setCopiedToClipboard(false), 1500);
   };
 
+  const stopSimulationProgressTracking = (): void => {
+    if (simulationProgressTimerRef.current != null) {
+      clearInterval(simulationProgressTimerRef.current);
+      simulationProgressTimerRef.current = null;
+    }
+    if (simulationWorkerRef.current) {
+      simulationWorkerRef.current.terminate();
+      simulationWorkerRef.current = null;
+    }
+  };
+
   const runSimulationInBrowser = async (): Promise<void> => {
     if (!runtimeApi || !form) {
       return;
     }
     setSimulationRunning(true);
     setSimulationError('');
+    setSimulationProgressDays(0);
+    setSimulationResult(null);
+
+    const start = performance.now();
+    const maxDays = SIMULATION_MAX_DAYS;
+    simulationProgressTimerRef.current = window.setInterval(() => {
+      const elapsed = performance.now() - start;
+      const targetProgress = Math.min(maxDays - 1, Math.floor((elapsed / 7000) * maxDays));
+      setSimulationProgressDays((current) => Math.min(maxDays - 1, Math.max(current, targetProgress)));
+    }, 100);
+
+    const worker = new Worker(new URL('./runtimeWorker.ts', import.meta.url), { type: 'module' });
+    simulationWorkerRef.current = worker;
+
     try {
-      const careerTargetLeague = Math.max(0, options.leagues.length);
-      const result = await runSimulation(runtimeApi, config, {
-        seed: 42,
-        maxActions: 100_000,
-        maxDays: 240,
-        sessionsPerDay: toInt(form.policy.sessions_per_day, 10),
-        targetLeague: careerTargetLeague,
+    const careerTargetLeague = Math.max(0, options.leagues.length - 1);
+      const result = await new Promise<RuntimeResult>((resolve, reject) => {
+        const onMessage = (event: MessageEvent<SimulationWorkerMessage>): void => {
+          if (event.data.type === 'success') {
+            resolve(event.data.result);
+            return;
+          }
+          if (event.data.type === 'failure') {
+            reject(new Error(event.data.error));
+          }
+        };
+
+        worker.onmessage = onMessage;
+        worker.onerror = () => {
+          reject(new Error('Worker failed while running simulation.'));
+        };
+        worker.postMessage({
+          type: 'run',
+          payload: {
+            config,
+            seed: 42,
+            maxActions: 100_000,
+            maxDays,
+            sessionsPerDay: toInt(form.policy.sessions_per_day, 10),
+            targetLeague: careerTargetLeague,
+          },
+        });
       });
+
+      const summaryDays = result.summary?.wall_days;
+      if (summaryDays != null) {
+        setSimulationProgressDays(clampNumber(summaryDays, 0, maxDays));
+      } else {
+        setSimulationProgressDays(maxDays);
+      }
       setSimulationResult(result);
     } catch (error) {
       if (error instanceof Error) {
@@ -1502,6 +1594,7 @@ function App() {
       setSimulationError(String(error));
       setSimulationResult(null);
     } finally {
+      stopSimulationProgressTracking();
       setSimulationRunning(false);
     }
   };
@@ -1980,6 +2073,21 @@ function App() {
             </>
           )}
         </p>
+        {simulationRunning && (
+          <div className="progress-wrap">
+            <div className="progress-meta">
+              <span>
+                {t('runtimeProgress', language)}: {simulationProgressDays}/{SIMULATION_MAX_DAYS} {t('runtimeDays', language)}
+              </span>
+            </div>
+            <div className="progress-track">
+              <div
+                className="progress-fill"
+                style={{ width: `${(simulationProgressDays / SIMULATION_MAX_DAYS) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
         <div className="actions">
           <button onClick={runSimulationInBrowser} disabled={runtimeStatus !== 'ready' || simulationRunning}>
             {runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language)}

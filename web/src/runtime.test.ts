@@ -24,6 +24,10 @@ describe('parseRuntimeSummary', () => {
       warnings: ['ok'],
       league: 6,
       diamonds: 14,
+      days_to_master_league: null,
+      diamonds_spent_total: 0,
+      diamond_spending_by_kind: [],
+      diamond_spending_by_item: [],
     });
   });
 
@@ -47,6 +51,10 @@ describe('parseRuntimeSummary', () => {
       warnings: [],
       league: 4,
       diamonds: 7,
+      days_to_master_league: null,
+      diamonds_spent_total: 0,
+      diamond_spending_by_kind: [],
+      diamond_spending_by_item: [],
     });
   });
 });
@@ -76,6 +84,10 @@ describe('runSimulation', () => {
       warnings: [],
       league: 1,
       diamonds: 8,
+      days_to_master_league: null,
+      diamonds_spent_total: 0,
+      diamond_spending_by_kind: [],
+      diamond_spending_by_item: [],
     });
   });
 });
