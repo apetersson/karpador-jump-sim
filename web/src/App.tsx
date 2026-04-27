@@ -500,9 +500,6 @@ const LEAGUE_LOCALES: Record<string, LocalizedText> = {
   '8': { de: 'Hyper-Liga', en: 'Hyper League', ja: 'ハイパーリーグ' },
   '9': { de: 'Top-Vier-Liga', en: 'Top Four League', ja: '四天王リーグ' },
   '10': { de: 'Meister-Liga', en: 'Master League', ja: 'マスターリーグ' },
-  '101': { de: 'Extra-Liga 1', en: 'Extra League 1', ja: 'エクストラリーグ1' },
-  '102': { de: 'Extra-Liga 2', en: 'Extra League 2', ja: 'エクストラリーグ2' },
-  '103': { de: 'Extra-Liga 3', en: 'Extra League 3', ja: 'エクストラリーグ3' },
 };
 
 const TRAINING_LOCALES: Record<string, LocalizedText> = {
@@ -1066,11 +1063,9 @@ function App() {
           berries,
           trainings,
           competitions,
-          extraCompetitions,
           breederRanks,
           magikarpRanks,
           leagues,
-          extraLeagues,
         ] =
           await Promise.all([
             loadJson<CatalogItem>('/master_data/support_pokemon.json'),
@@ -1078,15 +1073,13 @@ function App() {
             loadJson<CatalogItem>('/master_data/food_base_data.json'),
             loadJson<CatalogItem>('/master_data/training_base_data.json'),
             loadJson<CompetitionRow>('/master_data/competition_list.json'),
-            loadJson<CompetitionRow>('/master_data/extra_competition_list.json'),
             loadJson<RankRow>('/master_data/breeder_rank.json'),
             loadJson<RankRow>('/master_data/magikarp_rank.json'),
             loadJson<LeagueListRow>('/master_data/league_list.json'),
-            loadJson<LeagueListRow>('/master_data/extra_league_list.json'),
         ]);
 
-        const leagueRows = [...leagues, ...extraLeagues];
-        const competitionRows = [...competitions, ...extraCompetitions];
+        const leagueRows = leagues;
+        const competitionRows = competitions;
         const leagueIdList = leagueRows
           .map((row) => toInt(row.id, -1))
           .filter((id) => Number.isFinite(id))
