@@ -144,6 +144,7 @@ const UI_TEXT: Record<
   | 'policyKarpadorLossRisk'
   | 'policySessionsPerDay'
   | 'resultJsonTitle'
+  | 'showConfigToggle'
   | 'copyToClipboard'
   | 'copiedToClipboard'
   | 'downloadConfig'
@@ -356,9 +357,14 @@ const UI_TEXT: Record<
     ja: '1日あたりのログイン回数',
   },
   resultJsonTitle: {
-    de: 'Konfigurationsausgabe (JSON)',
-    en: 'Configuration output (JSON)',
-    ja: 'JSONの設定結果',
+    de: 'Laufzeit-Konfiguration (JSON)',
+    en: 'Runtime configuration (JSON)',
+    ja: 'ランタイム設定（JSON）',
+  },
+  showConfigToggle: {
+    de: 'Laufzeit-Konfiguration anzeigen',
+    en: 'Show runtime configuration',
+    ja: 'ランタイム設定を表示',
   },
   copyToClipboard: {
     de: 'In die Zwischenablage kopieren',
@@ -1005,6 +1011,7 @@ function App() {
   const [form, setForm] = useState<FormState | null>(null);
   const [customSupportPlan, setCustomSupportPlan] = useState<string[]>([]);
   const [copiedToClipboard, setCopiedToClipboard] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [runtimeApi, setRuntimeApi] = useState<RuntimeApi | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<string>('unavailable');
@@ -2124,14 +2131,23 @@ function App() {
       </section>
 
       <section>
-        <h2>{t('resultJsonTitle', language)}</h2>
-        <textarea className="json-output" value={config} readOnly rows={24} />
         <div className="actions">
-          <button onClick={copyToClipboard}>
-            {copiedToClipboard ? t('copiedToClipboard', language) : t('copyToClipboard', language)}
+          <button onClick={() => setShowConfig((v) => !v)}>
+            {t('showConfigToggle', language)}{showConfig ? ' ▼' : ' ▸'}
           </button>
-          <button onClick={downloadConfig}>{t('downloadConfig', language)}</button>
         </div>
+        {showConfig && (
+          <>
+            <h2>{t('resultJsonTitle', language)}</h2>
+            <textarea className="json-output" value={config} readOnly rows={24} />
+            <div className="actions">
+              <button onClick={copyToClipboard}>
+                {copiedToClipboard ? t('copiedToClipboard', language) : t('copyToClipboard', language)}
+              </button>
+              <button onClick={downloadConfig}>{t('downloadConfig', language)}</button>
+            </div>
+          </>
+        )}
       </section>
     </main>
   );
