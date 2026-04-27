@@ -4,6 +4,7 @@ import {
   useState,
   ChangeEvent,
 } from 'react';
+import { loadRuntimeApi, runSimulation, type RuntimeApi, type RuntimeResult } from './runtime';
 
 type Language = 'de' | 'en' | 'ja';
 
@@ -94,6 +95,7 @@ interface PolicyState {
   allowed_berry_upgrades: string[];
   allowed_training_upgrades: string[];
   karpador_loss_risk_max_level_percent: number;
+  sessions_per_day: number;
 }
 
 interface FormState {
@@ -139,6 +141,7 @@ const UI_TEXT: Record<
   | 'policyAllowedBerryUpgrades'
   | 'policyAllowedTrainingUpgrades'
   | 'policyKarpadorLossRisk'
+  | 'policySessionsPerDay'
   | 'resultJsonTitle'
   | 'copyToClipboard'
   | 'copiedToClipboard'
@@ -150,6 +153,16 @@ const UI_TEXT: Record<
   | 'numberInvalidNumber'
   | 'numberMustBeInteger'
   | 'numberOutOfRange'
+  | 'runtimeSection'
+  | 'runtimeRun'
+  | 'runtimeLoading'
+  | 'runtimeReady'
+  | 'runtimeUnavailable'
+  | 'runtimeRunning'
+  | 'runtimeStatusError'
+  | 'runtimeErrorLabel'
+  | 'runtimeResult'
+  | 'runtimeSummaryTitle'
 > = {
   appTitle: {
     de: 'Simulator-Startkonfiguration',
@@ -336,6 +349,11 @@ const UI_TEXT: Record<
     en: 'Max loss risk (0..100)',
     ja: '最大損失リスク (0..100)',
   },
+  policySessionsPerDay: {
+    de: 'Logins pro Tag',
+    en: 'Logins per day',
+    ja: '1日あたりのログイン回数',
+  },
   resultJsonTitle: {
     de: 'Ergebnis-JSON',
     en: 'Result JSON',
@@ -390,6 +408,56 @@ const UI_TEXT: Record<
     de: 'Wert muss zwischen {min} und {max} liegen',
     en: 'Value must be between {min} and {max}',
     ja: '{min} から {max} の間の値を入力してください',
+  },
+  runtimeSection: {
+    de: 'Browser Runtime',
+    en: 'Browser runtime',
+    ja: 'ブラウザ実行環境',
+  },
+  runtimeRun: {
+    de: 'In Browser ausführen',
+    en: 'Run in browser',
+    ja: 'ブラウザで実行',
+  },
+  runtimeLoading: {
+    de: 'Lädt Simulator-Runtime ...',
+    en: 'Loading simulator runtime ...',
+    ja: 'シミュレーターランタイムを読み込み中...',
+  },
+  runtimeReady: {
+    de: 'Runtime bereit.',
+    en: 'Runtime ready.',
+    ja: 'ランタイム準備完了。',
+  },
+  runtimeUnavailable: {
+    de: 'Runtime ist noch nicht verfügbar (Wasm-Build fehlt).',
+    en: 'Runtime unavailable (Wasm build missing).',
+    ja: 'ランタイムが利用できません（Wasm未ビルド）。',
+  },
+  runtimeRunning: {
+    de: 'Läuft ...',
+    en: 'Running ...',
+    ja: '実行中 ...',
+  },
+  runtimeStatusError: {
+    de: 'Runtime-Fehler',
+    en: 'Runtime error',
+    ja: 'ランタイムエラー',
+  },
+  runtimeErrorLabel: {
+    de: 'Ausführungsfehler',
+    en: 'Execution error',
+    ja: '実行エラー',
+  },
+  runtimeResult: {
+    de: 'Ergebnis',
+    en: 'Result',
+    ja: '結果',
+  },
+  runtimeSummaryTitle: {
+    de: 'Simulation-Zusammenfassung',
+    en: 'Simulation summary',
+    ja: 'シミュレーション要約',
   },
 };
 
@@ -562,6 +630,73 @@ const DECOR_LOCALES: Record<string, LocalizedText> = {
   '27': { de: 'Karpador Figur', en: 'Magikarp Figurine', ja: '金のコイキング像' },
 };
 
+const SUPPORT_TARGET_IDS: Record<string, string> = {
+  '1': 'pikachu',
+  '2': 'piplup',
+  '3': 'snorlax',
+  '4': 'charizard',
+  '5': 'greninja',
+  '6': 'meowth',
+  '7': 'bulbasaur',
+  '8': 'slowpoke',
+  '9': 'mudkip',
+  '10': 'popplio',
+  '11': 'rowlet',
+  '12': 'litten',
+  '13': 'gengar',
+  '14': 'eevee',
+  '15': 'mimikyu',
+  '16': 'gardevoir',
+};
+
+const DECOR_TARGET_IDS: Record<string, string> = {
+  '1': 'octillery_pot',
+  '2': 'sudowoodo_bonsai',
+  '3': 'starmie_shower',
+  '5': 'exeggutor_palm',
+  '6': 'important_sign',
+  '8': 'lampent_lamp',
+  '9': 'parasect_puffballs',
+  '10': 'sunflora_bloom',
+  '11': 'dugtrio_rock',
+  '12': 'shaymin_planter',
+  '13': 'clefairy_doll',
+  '15': 'substitute_plush',
+  '16': 'whimsicott_cushion',
+  '17': 'lilligant_doll',
+  '18': 'bronze_eevee',
+  '20': 'ss_anne_model',
+  '22': 'aegislash_statue',
+  '24': 'cacnea_planter',
+  '25': 'red_cap',
+  '26': 'ditto_cushion',
+  '27': 'gold_magikarp_statue',
+};
+
+const toSupportTargetId = (id: string): string => SUPPORT_TARGET_IDS[id] ?? id;
+const toDecorTargetId = (id: string): string => DECOR_TARGET_IDS[id] ?? id;
+const supportTargetIdSet = new Set(Object.values(SUPPORT_TARGET_IDS));
+const decorTargetIdSet = new Set(Object.values(DECOR_TARGET_IDS));
+
+const normalizePurchasePlanTargetId = (id: string): string => {
+  if (!id) {
+    return '';
+  }
+  if (supportTargetIdSet.has(id) || decorTargetIdSet.has(id)) {
+    return id;
+  }
+  if (SUPPORT_TARGET_IDS[id]) {
+    return SUPPORT_TARGET_IDS[id];
+  }
+  if (DECOR_TARGET_IDS[id]) {
+    return DECOR_TARGET_IDS[id];
+  }
+  return '';
+};
+
+const normalizePurchasePlanIds = (ids: string[]): string[] =>
+  Array.from(new Set(ids.map(normalizePurchasePlanTargetId).filter(Boolean)));
+
 const range = (start: number, end: number): number[] =>
   Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => start + i);
 
@@ -627,6 +762,20 @@ const isBattleRewardUnlocked = (
     return true;
   }
   return rewardPosition.competition <= selectedCompetition;
+};
+
+const getUnlockedItemsForLeagueCompetition = (
+  options: OptionData,
+  league: number,
+  competition: number,
+): { ownedSupports: string[]; ownedDecors: string[] } => {
+  const unlockedSupports = options.supports
+    .filter((support) => isBattleRewardUnlocked(support, league, competition, options.competitionPositions))
+    .map((support) => support.id);
+  const unlockedDecors = options.decors
+    .filter((decor) => isBattleRewardUnlocked(decor, league, competition, options.competitionPositions))
+    .map((decor) => decor.id);
+  return { ownedSupports: unlockedSupports, ownedDecors: unlockedDecors };
 };
 
 const supportLabel = (support: CatalogItem, language: Language): string => {
@@ -751,6 +900,22 @@ const createDefaultLevelMap = (items: CatalogItem[], value = 1): Record<string, 
 const createDefaultEnabledMap = (items: CatalogItem[], count = 0): Record<string, boolean> =>
   Object.fromEntries(items.map((entry, index) => [String(entry.id), index < count]));
 
+const normalizeUpgradeId = (prefix: 'food' | 'training', id: string): string => {
+  if (id.startsWith(`${prefix}_`)) {
+    return id;
+  }
+  return `${prefix}_${id}`;
+};
+
+const normalizeBerryUpgradeIds = (ids: string[]): string[] => ids.map((id) => normalizeUpgradeId('food', id));
+const normalizeTrainingUpgradeIds = (ids: string[]): string[] =>
+  ids.map((id) => normalizeUpgradeId('training', id));
+
+const selectedUpgradeIds = (items: Record<string, boolean>): string[] =>
+  Object.entries(items)
+    .filter((entry): entry is [string, true] => entry[1] === true)
+    .map(([id]) => id);
+
 async function loadJson<T>(path: string): Promise<T[]> {
   const response = await fetch(path);
   if (!response.ok) {
@@ -780,7 +945,8 @@ type PolicyStateScalarKey =
   | 'allow_skill_herbs'
   | 'allow_support_upgrades'
   | 'training_upgrade_share'
-  | 'karpador_loss_risk_max_level_percent';
+  | 'karpador_loss_risk_max_level_percent'
+  | 'sessions_per_day';
 
 function App() {
   const [language, setLanguage] = useState<Language>('de');
@@ -802,6 +968,37 @@ function App() {
   const [customSupportPlan, setCustomSupportPlan] = useState<string[]>([]);
   const [copiedToClipboard, setCopiedToClipboard] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [runtimeApi, setRuntimeApi] = useState<RuntimeApi | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<string>('unavailable');
+  const [runtimeLoadError, setRuntimeLoadError] = useState('');
+  const [simulationRunning, setSimulationRunning] = useState(false);
+  const [simulationError, setSimulationError] = useState('');
+  const [simulationResult, setSimulationResult] = useState<RuntimeResult | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const loadRuntime = async () => {
+      setRuntimeStatus('loading');
+      try {
+        const api = await loadRuntimeApi();
+        if (active) {
+          setRuntimeApi(api);
+          setRuntimeStatus('ready');
+          setRuntimeLoadError('');
+        }
+      } catch (error) {
+        if (active) {
+          setRuntimeApi(null);
+          setRuntimeStatus('unavailable');
+          setRuntimeLoadError(String(error));
+        }
+      }
+    };
+    loadRuntime();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -910,22 +1107,29 @@ function App() {
             training_sodas: 2,
             skill_herbs: 1,
             league_aids: 0,
-            owned_supports: Array.from(new Set(['pikachu', 'charizard', ...unlockedSupports])),
-            owned_decors: Array.from(new Set(['shaymin_planter', ...unlockedDecors])),
+            owned_supports: Array.from(
+              new Set([
+                'pikachu',
+                'charizard',
+                ...unlockedSupports.map((id) => toSupportTargetId(id)),
+              ]),
+            ),
+            owned_decors: Array.from(new Set(['shaymin_planter', ...unlockedDecors.map((id) => toDecorTargetId(id))])),
             berry_levels: createDefaultLevelMap(berries, 1),
             training_levels: createDefaultLevelMap(trainings, 1),
             berry_enabled: createDefaultEnabledMap(berries, 2),
             training_enabled: createDefaultEnabledMap(trainings, 2),
           },
           policy: {
+            allowed_berry_upgrades: selectedUpgradeIds(createDefaultEnabledMap(berries, 2)),
+            allowed_training_upgrades: selectedUpgradeIds(createDefaultEnabledMap(trainings, 2)),
             purchase_plan: 'custom',
             allow_training_sodas: true,
             allow_skill_herbs: true,
             allow_support_upgrades: true,
             training_upgrade_share: 2500,
-            allowed_berry_upgrades: ['food_1', 'food_2'],
-            allowed_training_upgrades: ['training_1', 'training_2'],
             karpador_loss_risk_max_level_percent: 60,
+            sessions_per_day: 10,
           },
         });
       } catch (err) {
@@ -972,13 +1176,28 @@ function App() {
 
     const allowedBerries = form.start_state.berry_enabled || {};
     const allowedTrainings = form.start_state.training_enabled || {};
-
+    const activeBerryUpgrades = selectedUpgradeIds(allowedBerries);
+    const activeTrainingUpgrades = selectedUpgradeIds(allowedTrainings);
     const currentUnlocked = getUnlockedItemsForLeagueCompetition(
+      options,
       toInt(form.start_state.league, 0),
       toInt(form.start_state.competition, 0),
     );
-    const unlockedSupportSet = new Set(currentUnlocked.ownedSupports);
-    const unlockedDecorSet = new Set(currentUnlocked.ownedDecors);
+    const unlockedPlanItemIds = new Set(
+      [...currentUnlocked.ownedSupports, ...currentUnlocked.ownedDecors]
+        .map(normalizePurchasePlanTargetId)
+        .filter(Boolean),
+    );
+    const purchasablePlanItemSet = new Set(
+      [
+        ...options.supports.filter((support) => resolvePurchasePrice(support) > 0).map((support) => toSupportTargetId(support.id)),
+        ...options.decors.filter((decor) => resolvePurchasePrice(decor) > 0).map((decor) => toDecorTargetId(decor.id)),
+      ]
+        .map(normalizePurchasePlanTargetId)
+        .filter((id) => id !== '' && !unlockedPlanItemIds.has(id)),
+    );
+    const unlockedSupportSet = new Set(currentUnlocked.ownedSupports.map(toSupportTargetId));
+    const unlockedDecorSet = new Set(currentUnlocked.ownedDecors.map(toDecorTargetId));
 
     const startStatePayload = {
       player_rank: toInt(form.start_state.player_rank, 1),
@@ -997,13 +1216,13 @@ function App() {
       owned_supports: [
         ...new Set([
           ...form.start_state.owned_supports.filter((id) => !unlockedSupportSet.has(id)),
-          ...currentUnlocked.ownedSupports,
+          ...currentUnlocked.ownedSupports.map(toSupportTargetId),
         ]),
       ],
       owned_decors: [
         ...new Set([
           ...form.start_state.owned_decors.filter((id) => !unlockedDecorSet.has(id)),
-          ...currentUnlocked.ownedDecors,
+          ...currentUnlocked.ownedDecors.map(toDecorTargetId),
         ]),
       ],
       berry_levels: Object.fromEntries(
@@ -1015,22 +1234,40 @@ function App() {
     };
 
     startStatePayload.berry_levels = Object.fromEntries(
-      Object.entries(startStatePayload.berry_levels).map(([key, value]) => [key, toInt(value, 1)]),
+      Object.entries(startStatePayload.berry_levels).map(([key, value]) => [
+        normalizeUpgradeId('food', key),
+        toInt(value, 1),
+      ]),
     );
     startStatePayload.training_levels = Object.fromEntries(
-      Object.entries(startStatePayload.training_levels).map(([key, value]) => [key, toInt(value, 1)]),
+      Object.entries(startStatePayload.training_levels).map(([key, value]) => [
+        normalizeUpgradeId('training', key),
+        toInt(value, 1),
+      ]),
     );
 
     const policyState = safeCopyValue(form.policy);
-    const policyPayload: PolicyState = {
+  const policyPayload: PolicyState = {
       ...policyState,
       training_upgrade_share: toInt(policyState.training_upgrade_share, 0),
+      sessions_per_day: clampNumber(toInt(policyState.sessions_per_day, 0), 1, 255),
       karpador_loss_risk_max_level_percent: toInt(policyState.karpador_loss_risk_max_level_percent, 0),
-      allowed_berry_upgrades: policyState.allowed_berry_upgrades.filter(Boolean),
-      allowed_training_upgrades: policyState.allowed_training_upgrades.filter(Boolean),
+      allowed_berry_upgrades: Array.from(
+        new Set([...normalizeBerryUpgradeIds(policyState.allowed_berry_upgrades.filter(Boolean)), ...normalizeBerryUpgradeIds(activeBerryUpgrades)]),
+      ),
+      allowed_training_upgrades: Array.from(
+        new Set([
+          ...normalizeTrainingUpgradeIds(policyState.allowed_training_upgrades.filter(Boolean)),
+          ...normalizeTrainingUpgradeIds(activeTrainingUpgrades),
+        ]),
+      ),
     };
 
-    policyPayload.purchase_plan = JSON.stringify(customSupportPlan.filter(Boolean).slice(0, 5));
+    policyPayload.purchase_plan = JSON.stringify(
+      normalizePurchasePlanIds(customSupportPlan)
+        .filter((id) => purchasablePlanItemSet.has(id))
+        .slice(0, 5),
+    );
 
     return JSON.stringify(
       {
@@ -1040,7 +1277,7 @@ function App() {
       null,
       2,
     );
-  }, [customSupportPlan, form, options.maxMagikarpRank]);
+  }, [customSupportPlan, form, options, options.maxMagikarpRank]);
 
   const handleStartStateChange = (key: StartStateScalarKey, value: number): void => {
     setForm((prev) => {
@@ -1076,13 +1313,15 @@ function App() {
     event: ChangeEvent<HTMLSelectElement>,
   ): void => {
     const values = Array.from(event.target.selectedOptions).map((item) => item.value);
+    const toCanonicalId = (id: string): string =>
+      field === 'owned_supports' ? toSupportTargetId(id) : toDecorTargetId(id);
     setForm((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
         start_state: {
           ...prev.start_state,
-          [field]: values,
+          [field]: values.map(toCanonicalId),
         },
       };
     });
@@ -1091,14 +1330,21 @@ function App() {
   const toggleBerry = (id: string): void => {
     setForm((prev) => {
       if (!prev) return prev;
+      const nextEnabled = !prev.start_state.berry_enabled[id];
       return {
         ...prev,
         start_state: {
           ...prev.start_state,
           berry_enabled: {
             ...prev.start_state.berry_enabled,
-            [id]: !prev.start_state.berry_enabled[id],
+            [id]: nextEnabled,
           },
+        },
+        policy: {
+          ...prev.policy,
+          allowed_berry_upgrades: nextEnabled
+            ? [...new Set([...prev.policy.allowed_berry_upgrades.filter(Boolean), id])]
+            : prev.policy.allowed_berry_upgrades.filter(Boolean).filter((entry) => entry !== id),
         },
       };
     });
@@ -1107,14 +1353,21 @@ function App() {
   const toggleTraining = (id: string): void => {
     setForm((prev) => {
       if (!prev) return prev;
+      const nextEnabled = !prev.start_state.training_enabled[id];
       return {
         ...prev,
         start_state: {
           ...prev.start_state,
           training_enabled: {
             ...prev.start_state.training_enabled,
-            [id]: !prev.start_state.training_enabled[id],
+            [id]: nextEnabled,
           },
+        },
+        policy: {
+          ...prev.policy,
+          allowed_training_upgrades: nextEnabled
+            ? [...new Set([...prev.policy.allowed_training_upgrades.filter(Boolean), id])]
+            : prev.policy.allowed_training_upgrades.filter(Boolean).filter((entry) => entry !== id),
         },
       };
     });
@@ -1158,7 +1411,7 @@ function App() {
       while (next.length < 5) {
         next.push('');
       }
-      next[index] = value;
+      next[index] = normalizePurchasePlanTargetId(value);
       return next.slice(0, 5);
     });
   };
@@ -1167,34 +1420,45 @@ function App() {
     if (!form) {
       return [];
     }
-    const unlockedItems = getUnlockedItemsForLeagueCompetition(form.start_state.league, form.start_state.competition);
-    const unlockedItemIds = new Set([...unlockedItems.ownedSupports, ...unlockedItems.ownedDecors]);
+    const unlockedItems = getUnlockedItemsForLeagueCompetition(
+      options,
+      form.start_state.league,
+      form.start_state.competition,
+    );
+    const normalizedUnlockedItemIds = new Set(
+      [
+        ...unlockedItems.ownedSupports.map(toSupportTargetId),
+        ...unlockedItems.ownedDecors.map(toDecorTargetId),
+      ],
+    );
     const otherSelected = new Set(
       customSupportPlan
         .map((entry, entryIndex) => (entryIndex === index ? '' : entry))
+        .map(normalizePurchasePlanTargetId)
         .filter((entry) => entry !== ''),
     );
     const uniqueOptions = new Map<string, PurchasePlanOption>();
-    for (const option of [
-      ...options.supports.map((support) => ({
-        id: support.id,
+    for (const support of options.supports) {
+      const option = {
+        id: toSupportTargetId(support.id),
         label: formatPurchasePlanOptionLabel(
           supportLabel(support, language),
           resolvePurchasePrice(support),
           language,
         ),
         cost: resolvePurchasePrice(support),
-      })),
-      ...options.decors.map((decor) => ({
-        id: decor.id,
-        label: formatPurchasePlanOptionLabel(
-          decorLabel(decor, language),
-          resolvePurchasePrice(decor),
-          language,
-        ),
+      };
+      if (option.cost <= 0 || uniqueOptions.has(option.id)) {
+        continue;
+      }
+      uniqueOptions.set(option.id, option);
+    }
+    for (const decor of options.decors) {
+      const option = {
+        id: toDecorTargetId(decor.id),
+        label: formatPurchasePlanOptionLabel(decorLabel(decor, language), resolvePurchasePrice(decor), language),
         cost: resolvePurchasePrice(decor),
-      })),
-    ]) {
+      };
       if (option.cost <= 0 || uniqueOptions.has(option.id)) {
         continue;
       }
@@ -1202,7 +1466,7 @@ function App() {
     }
 
     return [...uniqueOptions.values()]
-      .filter((entry) => !otherSelected.has(entry.id) && !unlockedItemIds.has(entry.id))
+      .filter((entry) => !otherSelected.has(entry.id) && !normalizedUnlockedItemIds.has(entry.id))
       .sort((a, b) => a.cost - b.cost || a.label.localeCompare(b.label));
   };
 
@@ -1210,6 +1474,36 @@ function App() {
     await navigator.clipboard.writeText(config);
     setCopiedToClipboard(true);
     setTimeout(() => setCopiedToClipboard(false), 1500);
+  };
+
+  const runSimulationInBrowser = async (): Promise<void> => {
+    if (!runtimeApi || !form) {
+      return;
+    }
+    setSimulationRunning(true);
+    setSimulationError('');
+    try {
+      const careerTargetLeague = Math.max(0, options.leagues.length);
+      const result = await runSimulation(runtimeApi, config, {
+        seed: 42,
+        maxActions: 100_000,
+        maxDays: 240,
+        sessionsPerDay: toInt(form.policy.sessions_per_day, 10),
+        targetLeague: careerTargetLeague,
+      });
+      setSimulationResult(result);
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Browser simulation failed:', error);
+        console.error('Stacktrace:', error.stack);
+      } else {
+        console.error('Browser simulation failed:', error);
+      }
+      setSimulationError(String(error));
+      setSimulationResult(null);
+    } finally {
+      setSimulationRunning(false);
+    }
   };
 
   const downloadConfig = () => {
@@ -1222,38 +1516,33 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  function getUnlockedItemsForLeagueCompetition(
-    league: number,
-    competition: number,
-  ): { ownedSupports: string[]; ownedDecors: string[] } {
-    const unlockedSupports = options.supports
-      .filter((support) => isBattleRewardUnlocked(support, league, competition, options.competitionPositions))
-      .map((support) => support.id);
-    const unlockedDecors = options.decors
-      .filter((decor) => isBattleRewardUnlocked(decor, league, competition, options.competitionPositions))
-      .map((decor) => decor.id);
-    return { ownedSupports: unlockedSupports, ownedDecors: unlockedDecors };
-  }
-
   const applyLeagueCompetitionSelection = (nextLeague: number, nextCompetition: number): void => {
     const maxCompetition = competitionOptions(nextLeague).at(-1) || 0;
     const clampedCompetition = clampNumber(nextCompetition, 0, maxCompetition);
-    const unlockedItems = getUnlockedItemsForLeagueCompetition(nextLeague, clampedCompetition);
-    const nextUnlockedItemSet = new Set([...unlockedItems.ownedSupports, ...unlockedItems.ownedDecors]);
-  const purchasablePlanItemSet = new Set(
-    [...options.supports, ...options.decors]
-      .filter((item) => resolvePurchasePrice(item) > 0)
-      .map((item) => item.id)
-      .filter((id) => !nextUnlockedItemSet.has(id)),
-  );
+    const unlockedItems = getUnlockedItemsForLeagueCompetition(
+      options,
+      nextLeague,
+      clampedCompetition,
+    );
+    const nextUnlockedItemSet = new Set(
+      [...unlockedItems.ownedSupports.map(toSupportTargetId), ...unlockedItems.ownedDecors.map(toDecorTargetId)],
+    );
+    const purchasablePlanItemSet = new Set(
+      [
+        ...options.supports.filter((support) => resolvePurchasePrice(support) > 0).map((support) => toSupportTargetId(support.id)),
+        ...options.decors.filter((decor) => resolvePurchasePrice(decor) > 0).map((decor) => toDecorTargetId(decor.id)),
+      ]
+        .filter((id) => !nextUnlockedItemSet.has(id)),
+    );
     setForm((prev) => {
       if (!prev) return prev;
       const previousUnlockedItems = getUnlockedItemsForLeagueCompetition(
+        options,
         prev.start_state.league,
         prev.start_state.competition,
       );
-      const previousUnlockedSupportSet = new Set(previousUnlockedItems.ownedSupports);
-      const previousUnlockedDecorSet = new Set(previousUnlockedItems.ownedDecors);
+      const previousUnlockedSupportSet = new Set(previousUnlockedItems.ownedSupports.map(toSupportTargetId));
+      const previousUnlockedDecorSet = new Set(previousUnlockedItems.ownedDecors.map(toDecorTargetId));
       const keepOwnSupports = prev.start_state.owned_supports.filter((id) => !previousUnlockedSupportSet.has(id));
       const keepOwnDecors = prev.start_state.owned_decors.filter((id) => !previousUnlockedDecorSet.has(id));
       return {
@@ -1262,13 +1551,23 @@ function App() {
           ...prev.start_state,
           league: nextLeague,
           competition: clampedCompetition,
-          owned_supports: Array.from(new Set([...keepOwnSupports, ...unlockedItems.ownedSupports])),
-          owned_decors: Array.from(new Set([...keepOwnDecors, ...unlockedItems.ownedDecors])),
+          owned_supports: Array.from(
+            new Set([...keepOwnSupports, ...unlockedItems.ownedSupports.map((id) => toSupportTargetId(id))]),
+          ),
+          owned_decors: Array.from(
+            new Set([...keepOwnDecors, ...unlockedItems.ownedDecors.map((id) => toDecorTargetId(id))]),
+          ),
         },
       };
     });
     setCustomSupportPlan((prev) =>
-      prev.filter((supportId) => purchasablePlanItemSet.has(supportId)),
+      Array.from(
+        new Set(
+          normalizePurchasePlanIds(prev).filter((supportId) =>
+            purchasablePlanItemSet.has(supportId),
+          ),
+        ),
+      ).slice(0, 5),
     );
   };
 
@@ -1279,6 +1578,13 @@ function App() {
   if (!form) {
     return <main className="app">{t('loading', language)}</main>;
   }
+
+  const runtimeStatusText =
+    runtimeStatus === 'loading'
+      ? t('runtimeLoading', language)
+      : runtimeStatus === 'ready'
+        ? t('runtimeReady', language)
+        : t('runtimeUnavailable', language);
 
   return (
     <main className="app">
@@ -1443,7 +1749,7 @@ function App() {
               size={Math.min(options.supports.length, 7)}
             >
               {options.supports.map((support) => (
-                <option key={support.id} value={support.id}>
+                <option key={support.id} value={toSupportTargetId(support.id)}>
                   {supportLabel(support, language)}
                 </option>
               ))}
@@ -1462,7 +1768,7 @@ function App() {
               size={Math.min(options.decors.length, 7)}
             >
               {options.decors.map((decor) => (
-                <option key={decor.id} value={decor.id}>
+                <option key={decor.id} value={toDecorTargetId(decor.id)}>
                   {decorLabel(decor, language)}
                 </option>
               ))}
@@ -1651,7 +1957,47 @@ function App() {
             max={100}
             onCommit={(value) => handlePolicyChange('karpador_loss_risk_max_level_percent', value)}
           />
+
+          <NumberInput
+            language={language}
+            label={t('policySessionsPerDay', language)}
+            value={form.policy.sessions_per_day}
+            min={1}
+            max={255}
+            onCommit={(value) => handlePolicyChange('sessions_per_day', value)}
+          />
         </article>
+      </section>
+
+      <section>
+        <h2>{t('runtimeSection', language)}</h2>
+        <p className="status-line">
+          {runtimeStatusText}
+          {runtimeLoadError && (
+            <>
+              {' '}
+              ({t('runtimeStatusError', language)}: {runtimeLoadError})
+            </>
+          )}
+        </p>
+        <div className="actions">
+          <button onClick={runSimulationInBrowser} disabled={runtimeStatus !== 'ready' || simulationRunning}>
+            {runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language)}
+          </button>
+        </div>
+        {simulationError && <p className="error-text">{t('runtimeErrorLabel', language)}: {simulationError}</p>}
+        {simulationResult && (
+          <div className="runtime-output">
+            <h3>{t('runtimeResult', language)}</h3>
+            <textarea className="json-output runtime-json" value={simulationResult.payload} readOnly rows={14} />
+            {simulationResult.summary && (
+              <>
+                <h4>{t('runtimeSummaryTitle', language)}</h4>
+                <pre>{JSON.stringify(simulationResult.summary, null, 2)}</pre>
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <section>
