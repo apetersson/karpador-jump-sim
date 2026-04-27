@@ -1,11 +1,17 @@
 target/
 .DS_Store
 web/public/wasm/
+web/node_modules/
 
 # Local autoresearch run artifacts; do not commit.
 research-results.tsv
+research-results.tsv.prev*
 autoresearch-state.json
+autoresearch-state.json.prev*
 autoresearch-lessons.md
 autoresearch-launch.json
+autoresearch-launch.json.prev*
 autoresearch-runtime.json
+autoresearch-runtime.json.prev*
 autoresearch-runtime.log
+autoresearch-runtime.log.prev*
