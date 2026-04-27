@@ -7,7 +7,9 @@ use serde_json::json;
 use wasm_bindgen::prelude::*;
 use std::collections::BTreeMap;
 
-const MASTER_LEAGUE_INDEX: u32 = 10;
+fn career_target_league(data: &GameData) -> u32 {
+    data.leagues.len().saturating_sub(1) as u32
+}
 const MINUTES_PER_DAY: f64 = 1440.0;
 
 /// Run the wall-time simulator in the browser from a JSON start configuration.
@@ -209,7 +211,7 @@ fn derive_days_to_master_league(value: &serde_json::Value) -> Option<f64> {
     let final_league = value
         .pointer("/final_state/league")
         .and_then(|value| value.as_u64())?;
-    let target_league = u64::from(MASTER_LEAGUE_INDEX);
+    let target_league = u64::from(career_target_league(&GameData::apk_master()));
     if final_league >= target_league {
         return value.get("wall_days").and_then(|value| value.as_f64());
     }

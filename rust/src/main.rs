@@ -163,14 +163,18 @@ fn run_walltime(args: RunArgs) -> anyhow_free::Result<()> {
         .unwrap_or(args.plan.as_str());
     validate_purchase_plan(&data, plan_name)?;
     let plan = data.preset_plan(plan_name);
+    let sessions_per_day = policy_config
+        .sessions_per_day
+        .unwrap_or(args.sessions_per_day);
+    let data_target_league = data.leagues.len().saturating_sub(1) as u32;
     let sim = WallTimeSimulator::new(
         rules,
         data,
         WallSimConfig {
             max_actions: args.max_actions,
             max_wall_days: args.max_days,
-            max_sessions_per_day: args.sessions_per_day,
-            target_league: target_league(&args.target),
+            max_sessions_per_day: sessions_per_day,
+            target_league: target_league(&args.target, data_target_league),
             karpador_loss_risk_max_level_percent: policy_config
                 .karpador_loss_risk_max_level_percent
                 .map(|value| value.min(100)),
@@ -263,13 +267,14 @@ fn validate_policy_config(data: &GameData, config: &PolicyConfig) -> anyhow_free
 fn optimize(args: OptimizeArgs) -> anyhow_free::Result<()> {
     let data = GameData::apk_master();
     let rules = ApkRules::new(&data);
+    let data_target_league = data.leagues.len().saturating_sub(1) as u32;
     let report = optimize_purchase_plans(
         rules,
         data,
         WallSimConfig {
             max_wall_days: args.max_days,
             max_sessions_per_day: args.sessions_per_day,
-            target_league: target_league(&args.target),
+            target_league: target_league(&args.target, data_target_league),
             ..WallSimConfig::default()
         },
         OptimizerConfig {
@@ -399,10 +404,10 @@ fn run_legacy(args: LegacyArgs) -> anyhow_free::Result<()> {
     Ok(())
 }
 
-fn target_league(target: &str) -> u32 {
+fn target_league(target: &str, data_default: u32) -> u32 {
     match target {
-        "master-league" | "master" => 10,
-        _ => 10,
+        "master-league" | "master" => data_default,
+        other => other.parse::<u32>().unwrap_or(data_default),
     }
 }
 

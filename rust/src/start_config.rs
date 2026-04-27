@@ -66,4 +66,6 @@ pub struct PolicyConfig {
     pub allowed_training_upgrades: Option<Vec<String>>,
     #[serde(default)]
     pub karpador_loss_risk_max_level_percent: Option<u32>,
+    #[serde(default)]
+    pub sessions_per_day: Option<u8>,
 }

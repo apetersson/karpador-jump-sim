@@ -817,10 +817,22 @@ impl GameData {
             json_rows(include_str!("../decoded_master_data/support_pokemon.json"));
         let decor_rows: Vec<DecorationRow> =
             json_rows(include_str!("../decoded_master_data/decoration.json"));
-        let league_rows: Vec<LeagueRow> =
+        let regular_league_rows: Vec<LeagueRow> =
             json_rows(include_str!("../decoded_master_data/league_list.json"));
-        let competition_rows: Vec<CompetitionRow> =
+        let extra_league_rows: Vec<LeagueRow> =
+            json_rows(include_str!("../decoded_master_data/extra_league_list.json"));
+        let league_rows: Vec<LeagueRow> = regular_league_rows
+            .into_iter()
+            .chain(extra_league_rows)
+            .collect();
+        let regular_competition_rows: Vec<CompetitionRow> =
             json_rows(include_str!("../decoded_master_data/competition_list.json"));
+        let extra_competition_rows: Vec<CompetitionRow> =
+            json_rows(include_str!("../decoded_master_data/extra_competition_list.json"));
+        let competition_rows: Vec<CompetitionRow> = regular_competition_rows
+            .into_iter()
+            .chain(extra_competition_rows)
+            .collect();
         let breeder_rows: Vec<BreederRankRow> =
             json_rows(include_str!("../decoded_master_data/breeder_rank.json"));
         let magikarp_rows: Vec<MagikarpRankRow> =
