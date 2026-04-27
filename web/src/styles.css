@@ -160,3 +160,31 @@ button:hover {
   font-size: 13px;
   min-height: 330px;
 }
+
+.status-line {
+  margin: 0 0 10px;
+}
+
+.error-text {
+  color: #8a1f11;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.runtime-output h3,
+.runtime-output h4 {
+  margin: 12px 0 6px;
+}
+
+.runtime-json {
+  min-height: 240px;
+}
+
+.runtime-output pre {
+  margin: 6px 0 0;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #f5f5fd;
+  white-space: pre-wrap;
+}

@@ -1,0 +1,12 @@
+usage: autoresearch_runtime_ctl.py run [-h] [--repo REPO]
+                                       [--launch-path LAUNCH_PATH]
+                                       [--results-path RESULTS_PATH]
+                                       [--state-path STATE_PATH]
+                                       [--runtime-path RUNTIME_PATH]
+                                       [--log-path LOG_PATH]
+                                       [--sleep-seconds SLEEP_SECONDS]
+                                       [--max-stagnation MAX_STAGNATION]
+                                       [--min-free-mb MIN_FREE_MB]
+                                       [--codex-bin CODEX_BIN]
+                                       [--codex-arg CODEX_ARG]
+autoresearch_runtime_ctl.py run: error: argument --codex-arg: expected one argument

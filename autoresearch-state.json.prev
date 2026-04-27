@@ -1,0 +1,61 @@
+{
+  "config": {
+    "direction": "lower",
+    "goal": "Find player_policy variants that minimize median wall-time days to Master League in the Karpador Jump simulator with 10 evenly spaced sessions/day",
+    "guard": "cargo test --release",
+    "iterations": null,
+    "metric": "median_wall_days_to_master_20_seed_policy_eval",
+    "parallel_mode": "serial",
+    "repos": [
+      {
+        "path": "/Users/andreas/Documents/code/karpador/simulator",
+        "role": "primary",
+        "scope": "src/player_policy.rs,src/walltime.rs,src/optimizer.rs,src/main.rs,src/model.rs,src/rules.rs,src/data.rs,tests/**,README.md"
+      }
+    ],
+    "rollback_policy": "manual apply_patch edits or git revert only; never reset unrelated user changes",
+    "scope": "src/player_policy.rs,src/walltime.rs,src/optimizer.rs,src/main.rs,src/model.rs,src/rules.rs,src/data.rs,tests/**,README.md",
+    "session_mode": "foreground",
+    "stop_condition": "Best retained policy variant is validated on 100 deterministic seeds or no meaningful median improvement after focused policy pivots",
+    "verify": "target/release/karpador-sim run --plan parasect_puffballs,rowlet,shaymin_planter,lilligant_doll,gardevoir --seed <0..19> --max-days 240 --sessions-per-day 10 --target master-league --json; median wall_days",
+    "web_search": "disabled"
+  },
+  "mode": "loop",
+  "run_tag": "player-policy-optimization",
+  "state": {
+    "baseline_metric": 35.691319444444446,
+    "best_iteration": 13,
+    "best_metric": 26.02916666666667,
+    "blocked": 0,
+    "consecutive_discards": 2,
+    "crashes": 0,
+    "current_labels": [
+      "rollback-overfit",
+      "policy-berry-rest-loop",
+      "production-path"
+    ],
+    "current_metric": 26.276736111111113,
+    "discards": 10,
+    "iteration": 19,
+    "keeps": 2,
+    "last_commit": "b8d0f5d",
+    "last_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "b8d0f5d"
+    },
+    "last_status": "discard",
+    "last_trial_commit": "b8d0f5d",
+    "last_trial_labels": [
+      "policy-pokedrops",
+      "rowlet-only",
+      "overfit"
+    ],
+    "last_trial_metric": 26.4799,
+    "last_trial_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "b8d0f5d"
+    },
+    "no_ops": 0,
+    "pivot_count": 0
+  },
+  "updated_at": "2026-04-26T16:09:28Z",
+  "version": 1
+}

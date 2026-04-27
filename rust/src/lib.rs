@@ -2,6 +2,7 @@ pub mod curve_audit;
 pub mod data;
 pub mod model;
 pub mod optimizer;
+pub mod runtime_wasm;
 pub mod player_policy;
 pub mod rules;
 pub mod sim;

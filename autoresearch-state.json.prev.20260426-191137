@@ -1,0 +1,77 @@
+{
+  "config": {
+    "direction": "lower",
+    "execution_policy": "danger_full_access",
+    "goal": "Find optimal diamond buy order for Karpador Jump simulator with 10 evenly spaced sessions/day",
+    "guard": "cargo test",
+    "iterations": null,
+    "metric": "median_wall_days_to_master_240d_10_even_sessions",
+    "parallel_mode": "serial",
+    "repos": [
+      {
+        "path": "/Users/andreas/Documents/code/karpador/simulator",
+        "role": "primary",
+        "scope": "src/optimizer.rs,src/main.rs,src/walltime.rs,src/data.rs,src/model.rs,src/rules.rs,README.md"
+      }
+    ],
+    "rollback_policy": "manual apply_patch edits or git revert only; never reset unrelated user changes",
+    "scope": "src/optimizer.rs,src/main.rs,src/walltime.rs,src/data.rs,src/model.rs,src/rules.rs,README.md",
+    "session_mode": "background",
+    "stop_condition": "Top buy order validated with 1000 deterministic runs; stop after focused neighboring/permutation/beam expansions produce no meaningful median-day improvement",
+    "verify": "cargo run --release -- optimize --runs 100 --beam-width 20 --target master-league --max-days 240 --sessions-per-day 10 --json",
+    "web_search": "disabled"
+  },
+  "mode": "loop",
+  "run_tag": "buy-order-even-sessions",
+  "state": {
+    "baseline_metric": 160.62777777777777,
+    "best_iteration": 3,
+    "best_metric": 157.7375,
+    "blocked": 0,
+    "consecutive_discards": 2,
+    "crashes": 1,
+    "current_labels": [
+      "search-space",
+      "permutation",
+      "production-path"
+    ],
+    "current_metric": 157.7375,
+    "discards": 2,
+    "iteration": 5,
+    "keeps": 1,
+    "last_commit": "c2430c5",
+    "last_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "c2430c5"
+    },
+    "last_status": "crash",
+    "last_trial_commit": "c2430c5",
+    "last_trial_labels": [
+      "search-space",
+      "permutation",
+      "runtime-cost"
+    ],
+    "last_trial_metric": 157.7375,
+    "last_trial_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "c2430c5"
+    },
+    "no_ops": 0,
+    "pivot_count": 0
+  },
+  "supervisor": {
+    "last_exit_kind": "turn_complete",
+    "last_observed_iteration": 4,
+    "last_observed_metric": 157.7375,
+    "last_observed_signature": "{\"iteration\":4,\"last_status\":\"refine\",\"last_trial_commit\":\"c2430c5\",\"last_trial_labels\":[\"validation-1000\",\"stop-check\"],\"last_trial_metric\":158.38541666666669}",
+    "last_observed_status": "refine",
+    "last_observed_updated_at": "2026-04-26T11:31:55Z",
+    "last_reason": "Last recorded status is 'refine'; the loop remains resumable and should continue in a fresh Codex session.",
+    "last_turn_finished_at": "2026-04-26T11:32:11Z",
+    "recommended_action": "relaunch",
+    "restart_count": 1,
+    "should_continue": true,
+    "stagnation_count": 0,
+    "terminal_reason": "none"
+  },
+  "updated_at": "2026-04-26T12:03:44Z",
+  "version": 1
+}

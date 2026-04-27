@@ -1,0 +1,24 @@
+# environment: cpu=20 ram=131072MB disk_free=165398MB rust=1.94.1 network=disabled_by_policy
+# metric_direction: higher
+# mode: loop
+# run_tag: karpador-240d-active-build-order
+# parallel: serial
+# web_search: disabled
+# goal: Find the diamond purchase/build order that optimizes active-player progress toward Master League in Pokemon Magikarp Jump
+# scope: simulator/src/optimizer.rs,simulator/src/main.rs,simulator/src/model.rs,simulator/src/walltime.rs,simulator/src/data.rs,simulator/src/rules.rs,simulator/README.md
+# repos_json: [{"path":"/Users/andreas/Documents/code/karpador/simulator","role":"primary","scope":"simulator/src/optimizer.rs,simulator/src/main.rs,simulator/src/model.rs,simulator/src/walltime.rs,simulator/src/data.rs,simulator/src/rules.rs,simulator/README.md"}]
+# metric: 240d_active_player_composite_progress
+# verify: cargo run --release -- optimize --runs 100 --beam-width 20 --target master-league --max-days 240 --sessions-per-day 10 --json
+# guard: cargo test
+# stop_condition: Best available purchase ordering ranked by 240-day success rate, trainer rank, league progress, and wall-time
+# rollback_policy: manual apply_patch edits; discard failed edits with inverse patch, never reset unrelated user changes
+iteration	commit	metric	delta	guard	status	description
+0	no-commit	0	0	-	baseline	Current optimizer at 240d/10 sessions reports 0 success and no secondary trainer-rank progress metric; top plan cheapest-first-top3
+1	no-commit	586652.219667	+586652.219667	pass	keep	[labels: progress-metric, production-path] Add 240-day secondary progress scoring to optimizer: success rate, median/mean trainer rank, league progress; best 100-run plan expensive-first-top5 rank58 mean58.44
+2	no-commit	596710.939667	+10058.72	pass	keep	[labels: search-space, production-path] Add exhaustive permutations of the five most expensive purchase candidates; best 100-run 240d plan gardevoir>ditto_cushion>charizard>gengar>bronze_eevee reaches median trainer rank 59
+3	no-commit	596710.939667	0	pass	discard	[labels: search-space, relaxo] Tested targeted Relaxo/Snorlax top-5 permutations; best metric unchanged, Snorlax variants tie only when late, so do not keep added special-case generator
+4	no-commit	606833.689667	+10122.75	pass	keep	[labels: search-space, production-path] Add Gardevoir-first second-candidate sweep; best 100-run 240d plan gardevoir>rowlet>charizard reaches median trainer rank 60, mean rank 60.22
+5	no-commit	637097.479667	+30263.79	pass	keep	[labels: search-space, production-path] Add third-candidate sweep after gardevoir>rowlet; best 100-run 240d plan gardevoir>rowlet>slowpoke>charizard>gengar reaches median trainer rank 63
+6	no-commit	647246.289667	+10148.81	pass	keep	[labels: search-space, production-path] Add fourth-candidate sweep after gardevoir>rowlet>slowpoke; best 100-run 240d plan gardevoir>rowlet>slowpoke>parasect_puffballs>charizard reaches median trainer rank 64
+7	no-commit	687526.579667	+40280.29	pass	keep	[labels: search-space, production-path] Add fifth-candidate sweep after gardevoir>rowlet>slowpoke>parasect; best 100-run 240d plan gardevoir>rowlet>slowpoke>parasect_puffballs>exeggutor_palm reaches median trainer rank 68
+8	no-commit	687519.449667	-7.13	pass	refine	[labels: validation-1000] 1000-seed direct validation of top candidates: shaymin_alt slightly beats exeggutor on mean rank/progress at same median rank 68; use top-candidate validation for final recommendation

@@ -1,0 +1,58 @@
+{
+  "config": {
+    "direction": "higher",
+    "goal": "Find the diamond purchase/build order that optimizes active-player progress toward Master League in Pokemon Magikarp Jump",
+    "guard": "cargo test",
+    "iterations": null,
+    "metric": "240d_active_player_composite_progress",
+    "parallel_mode": "serial",
+    "repos": [
+      {
+        "path": "/Users/andreas/Documents/code/karpador/simulator",
+        "role": "primary",
+        "scope": "simulator/src/optimizer.rs,simulator/src/main.rs,simulator/src/model.rs,simulator/src/walltime.rs,simulator/src/data.rs,simulator/src/rules.rs,simulator/README.md"
+      }
+    ],
+    "rollback_policy": "manual apply_patch edits; discard failed edits with inverse patch, never reset unrelated user changes",
+    "scope": "simulator/src/optimizer.rs,simulator/src/main.rs,simulator/src/model.rs,simulator/src/walltime.rs,simulator/src/data.rs,simulator/src/rules.rs,simulator/README.md",
+    "session_mode": "foreground",
+    "stop_condition": "Best available purchase ordering ranked by 240-day success rate, trainer rank, league progress, and wall-time",
+    "verify": "cargo run --release -- optimize --runs 100 --beam-width 20 --target master-league --max-days 240 --sessions-per-day 10 --json",
+    "web_search": "disabled"
+  },
+  "mode": "loop",
+  "run_tag": "karpador-240d-active-build-order",
+  "state": {
+    "baseline_metric": 0,
+    "best_iteration": 7,
+    "best_metric": 687526.579667,
+    "blocked": 0,
+    "consecutive_discards": 1,
+    "crashes": 0,
+    "current_labels": [
+      "search-space",
+      "production-path"
+    ],
+    "current_metric": 687526.579667,
+    "discards": 1,
+    "iteration": 8,
+    "keeps": 6,
+    "last_commit": "no-commit",
+    "last_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "no-commit"
+    },
+    "last_status": "refine",
+    "last_trial_commit": "no-commit",
+    "last_trial_labels": [
+      "validation-1000"
+    ],
+    "last_trial_metric": 687519.449667,
+    "last_trial_repo_commits": {
+      "/Users/andreas/Documents/code/karpador/simulator": "no-commit"
+    },
+    "no_ops": 0,
+    "pivot_count": 0
+  },
+  "updated_at": "2026-04-26T09:10:37Z",
+  "version": 1
+}

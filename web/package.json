@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:wasm": "cd ../rust && wasm-pack build --target web --out-dir ../web/public/wasm --out-name karpador_sim --release",
+    "test": "vitest run",
+    "test:with-wasm": "pnpm run build:wasm && pnpm run test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -16,6 +19,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.2",
+    "vitest": "^3.1.3",
     "typescript": "^5.8.2",
     "vite": "^5.4.10"
   },

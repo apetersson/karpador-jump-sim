@@ -1,0 +1,37 @@
+{
+  "approvals": {},
+  "config": {
+    "direction": "lower",
+    "execution_policy": "danger_full_access",
+    "goal": "Find optimal diamond buy order for Karpador Jump simulator with 10 evenly spaced sessions/day",
+    "guard": "cargo test",
+    "iterations": null,
+    "metric": "median_wall_days_to_master_240d_10_even_sessions",
+    "parallel_mode": "serial",
+    "repos": [
+      {
+        "path": "/Users/andreas/Documents/code/karpador/simulator",
+        "role": "primary",
+        "scope": "src/optimizer.rs,src/main.rs,src/walltime.rs,src/data.rs,src/model.rs,src/rules.rs,README.md"
+      }
+    ],
+    "rollback_policy": "manual apply_patch edits or git revert only; never reset unrelated user changes",
+    "run_tag": "buy-order-even-sessions",
+    "scope": "src/optimizer.rs,src/main.rs,src/walltime.rs,src/data.rs,src/model.rs,src/rules.rs,README.md",
+    "session_mode": "background",
+    "stop_condition": "Top buy order validated with 1000 deterministic runs; stop after focused neighboring/permutation/beam expansions produce no meaningful median-day improvement",
+    "verify": "cargo run --release -- optimize --runs 100 --beam-width 20 --target master-league --max-days 240 --sessions-per-day 10 --json",
+    "web_search": "disabled"
+  },
+  "created_at": "2026-04-26T09:52:23Z",
+  "defaults": {},
+  "mode": "loop",
+  "notes": [
+    "Use distributed session slots: 08:00,09:20,...,20:00. Current known top: Guardevoir > Bauz > Flegmon > Parasect-Pilze > Shaymin-Pflanze."
+  ],
+  "original_goal": "finde die optimale buy-ordnung",
+  "prompt_text": "Background codex-autoresearch run. Goal: find the optimal diamond buy order for the Karpador/Magikarp Jump Rust simulator after the fixed evenly-spaced 10 sessions/day wall-time model. Optimize for Master League completion within max-days=240; once all serious candidates have 100% success, minimize median wall-time days, then mean days, then diamond spend. Use APK data and current player policy. Start from current known strong plan [gardevoir,rowlet,slowpoke,parasect_puffballs,shaymin_planter] with 1000-run median about 160.71d. Explore buy-order search improvements in src/optimizer.rs and/or external validation scripts as needed, one focused change per iteration, cargo test as guard. Use deterministic seeds. Keep local autoresearch artifacts uncommitted. Stop when no plausible neighboring/permutation/beam search extension improves validated top plan, and provide German names in final summary.",
+  "resume_seed": {},
+  "updated_at": "2026-04-26T09:52:23Z",
+  "version": 1
+}
