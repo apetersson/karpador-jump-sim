@@ -1068,14 +1068,14 @@ function App() {
           leagues,
         ] =
           await Promise.all([
-            loadJson<CatalogItem>('/master_data/support_pokemon.json'),
-            loadJson<CatalogItem>('/master_data/decoration.json'),
-            loadJson<CatalogItem>('/master_data/food_base_data.json'),
-            loadJson<CatalogItem>('/master_data/training_base_data.json'),
-            loadJson<CompetitionRow>('/master_data/competition_list.json'),
-            loadJson<RankRow>('/master_data/breeder_rank.json'),
-            loadJson<RankRow>('/master_data/magikarp_rank.json'),
-            loadJson<LeagueListRow>('/master_data/league_list.json'),
+            loadJson<CatalogItem>('master_data/support_pokemon.json'),
+            loadJson<CatalogItem>('master_data/decoration.json'),
+            loadJson<CatalogItem>('master_data/food_base_data.json'),
+            loadJson<CatalogItem>('master_data/training_base_data.json'),
+            loadJson<CompetitionRow>('master_data/competition_list.json'),
+            loadJson<RankRow>('master_data/breeder_rank.json'),
+            loadJson<RankRow>('master_data/magikarp_rank.json'),
+            loadJson<LeagueListRow>('master_data/league_list.json'),
         ]);
 
         const leagueRows = leagues;
