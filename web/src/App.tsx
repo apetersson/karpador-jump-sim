@@ -176,14 +176,14 @@ const UI_TEXT: Record<
     ja: '言語',
   },
   headerPath: {
-    de: 'Konfigurations-JSON für',
-    en: 'Configuration JSON for',
-    ja: '設定JSONファイル',
+    de: 'Die Startkonfiguration liegt in',
+    en: 'Use this configuration file',
+    ja: '設定ファイルは次の場所です',
   },
   headerNote: {
-    de: 'League- und Competition-Indices sind 0-basiert.',
-    en: 'League and competition indices are 0-based.',
-    ja: 'リーグとコンペティションインデックスは0始まりです。',
+    de: 'Hinweis: league und competition in start_state sind 0-basiert (erste Position ist 0).',
+    en: 'Note: league and competition in start_state are 0-based (first entry is 0).',
+    ja: '注意: start_state の league と competition は0始まりです（最初は0）。',
   },
   startStateSection: {
     de: 'Startzustand',
@@ -191,9 +191,9 @@ const UI_TEXT: Record<
     ja: '開始設定',
   },
   policySection: {
-    de: 'Policy',
-    en: 'Policy',
-    ja: 'ポリシー',
+    de: 'Strategie',
+    en: 'Strategy',
+    ja: '戦略',
   },
   startStatePlayerRank: {
     de: 'Spieler-Rang',
@@ -261,14 +261,14 @@ const UI_TEXT: Record<
     ja: 'リーグ支援',
   },
   startStateOwnedSupports: {
-    de: 'Unterstützer',
-    en: 'Supports',
-    ja: 'サポート',
+    de: 'Verfügbare Unterstützer',
+    en: 'Owned supports',
+    ja: '保有サポート',
   },
   startStateOwnedDecors: {
-    de: 'Dekore',
-    en: 'Decors',
-    ja: 'デコ',
+    de: 'Verfügbare Dekore',
+    en: 'Owned decorations',
+    ja: '保有デコ',
   },
   multiSelectHint: {
     de: 'Mehrfachauswahl mit Ctrl/⌘',
@@ -301,9 +301,9 @@ const UI_TEXT: Record<
     ja: '購入計画',
   },
   policyCustomPlan: {
-    de: 'Eigener purchase_plan (max. 5)',
-    en: 'Custom purchase_plan (max. 5)',
-    ja: 'カスタム purchase_plan（最大5）',
+    de: 'Eigene Kaufkonfiguration (max. 5)',
+    en: 'Custom purchase setup (max. 5)',
+    ja: '購入設定をカスタムする（最大5件）',
   },
   policyCustomPlanHint: {
     de: 'Wähle bis zu 5 unterstützende Items (Supports oder Dekos, keine Freitext-Eingabe).',
@@ -336,14 +336,14 @@ const UI_TEXT: Record<
     ja: 'トレーニングアップグレード配分 (0..10000)',
   },
   policyAllowedBerryUpgrades: {
-    de: 'Erlaubte Beeren-Upgrades',
+    de: 'Erlaubte Beeren-Verbesserungen',
     en: 'Allowed food upgrades',
-    ja: '許可されるえさ強化',
+    ja: '使用可能なえさ強化',
   },
   policyAllowedTrainingUpgrades: {
-    de: 'Erlaubte Trainings-Upgrades',
+    de: 'Erlaubte Trainings-Verbesserungen',
     en: 'Allowed training upgrades',
-    ja: '許可されるトレーニング強化',
+    ja: '使用可能なトレーニング強化',
   },
   policyKarpadorLossRisk: {
     de: 'Max. Verlust-Risiko (0..100)',
@@ -356,9 +356,9 @@ const UI_TEXT: Record<
     ja: '1日あたりのログイン回数',
   },
   resultJsonTitle: {
-    de: 'Ergebnis-JSON',
-    en: 'Result JSON',
-    ja: '結果JSON',
+    de: 'Konfigurationsausgabe (JSON)',
+    en: 'Configuration output (JSON)',
+    ja: 'JSONの設定結果',
   },
   copyToClipboard: {
     de: 'In die Zwischenablage kopieren',
@@ -371,9 +371,9 @@ const UI_TEXT: Record<
     ja: 'コピーしました！',
   },
   downloadConfig: {
-    de: 'Als start_config.json speichern',
-    en: 'Save as start_config.json',
-    ja: 'start_config.jsonとして保存',
+    de: 'Konfiguration herunterladen',
+    en: 'Download configuration',
+    ja: '設定をダウンロード',
   },
   loading: {
     de: 'Lade Master-Daten ...',
@@ -1855,9 +1855,7 @@ function App() {
           />
 
           <label>
-            <span>
-              {t('startStateOwnedSupports', language)} (owned_supports)
-            </span>
+            <span>{t('startStateOwnedSupports', language)}</span>
             <select
               multiple
               value={form.start_state.owned_supports}
@@ -1874,9 +1872,7 @@ function App() {
           </label>
 
           <label>
-            <span>
-              {t('startStateOwnedDecors', language)} (owned_decors)
-            </span>
+            <span>{t('startStateOwnedDecors', language)}</span>
             <select
               multiple
               value={form.start_state.owned_decors}
@@ -2020,9 +2016,7 @@ function App() {
           />
 
           <label>
-            <span>
-              {t('policyAllowedBerryUpgrades', language)} (allowed_berry_upgrades)
-            </span>
+            <span>{t('policyAllowedBerryUpgrades', language)}</span>
             <select
               multiple
               value={form.policy.allowed_berry_upgrades}
@@ -2043,9 +2037,7 @@ function App() {
           </label>
 
           <label>
-            <span>
-              {t('policyAllowedTrainingUpgrades', language)} (allowed_training_upgrades)
-            </span>
+            <span>{t('policyAllowedTrainingUpgrades', language)}</span>
             <select
               multiple
               value={form.policy.allowed_training_upgrades}
