@@ -1285,6 +1285,7 @@ function App() {
   const simulationWorkerRef = useRef<Worker | null>(null);
   const runtimeSectionRef = useRef<HTMLElement | null>(null);
   const runtimeResultRef = useRef<HTMLDivElement | null>(null);
+  const timePlayedCardRef = useRef<HTMLDivElement | null>(null);
   const scrollToResultWhenReadyRef = useRef(false);
 
   useEffect(() => {
@@ -1489,7 +1490,7 @@ function App() {
     if (simulationResult && scrollToResultWhenReadyRef.current) {
       scrollToResultWhenReadyRef.current = false;
       window.requestAnimationFrame(() => {
-        runtimeResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        timePlayedCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
   }, [simulationResult]);
@@ -2445,7 +2446,7 @@ function App() {
                     <span>{t('runtimeOutcome', language)}</span>
                     <strong>{simulationResult.summary.outcome}</strong>
                   </div>
-                  <div className="result-card">
+                  <div className="result-card result-card-anchor" ref={timePlayedCardRef}>
                     <span>{t('runtimeWallDays', language)}</span>
                     <strong>{formatDays(simulationResult.summary.wall_days, language)}</strong>
                   </div>

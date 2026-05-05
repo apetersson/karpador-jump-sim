@@ -197,6 +197,10 @@ button:hover {
   box-shadow: 0 6px 16px #0000000d;
 }
 
+.result-card-anchor {
+  scroll-margin-top: 24px;
+}
+
 .result-card.highlight {
   background: linear-gradient(135deg, #1f5fcc, #4a7dea);
   color: #fff;
