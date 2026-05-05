@@ -1284,6 +1284,8 @@ function App() {
   const simulationProgressTimerRef = useRef<number | null>(null);
   const simulationWorkerRef = useRef<Worker | null>(null);
   const runtimeSectionRef = useRef<HTMLElement | null>(null);
+  const runtimeResultRef = useRef<HTMLDivElement | null>(null);
+  const scrollToResultWhenReadyRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -1482,6 +1484,15 @@ function App() {
       writeStateToUrl(form.start_state, form.policy, customSupportPlan);
     }
   }, [customSupportPlan, form]);
+
+  useEffect(() => {
+    if (simulationResult && scrollToResultWhenReadyRef.current) {
+      scrollToResultWhenReadyRef.current = false;
+      window.requestAnimationFrame(() => {
+        runtimeResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+  }, [simulationResult]);
 
   const leagueOptions = useMemo(() => {
     const keys = Object.keys(options.leagueCompetitionCounts)
@@ -1996,7 +2007,8 @@ function App() {
   const runtimeButtonLabel =
     runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language);
   const runSimulationFromHeader = (): void => {
-    runtimeSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    scrollToResultWhenReadyRef.current = true;
+    (runtimeResultRef.current ?? runtimeSectionRef.current)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     void runSimulationInBrowser();
   };
 
@@ -2423,7 +2435,7 @@ function App() {
         </div>
         {simulationError && <p className="error-text">{t('runtimeErrorLabel', language)}: {simulationError}</p>}
         {simulationResult && (
-          <div className="runtime-output">
+          <div className="runtime-output" ref={runtimeResultRef}>
             <h3>{t('runtimeResult', language)}</h3>
             {simulationResult.summary && (
               <div className="friendly-results">
