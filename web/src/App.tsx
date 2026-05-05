@@ -163,8 +163,11 @@ const UI_TEXT: Record<
   | 'runtimeRunning'
   | 'runtimeStatusError'
   | 'runtimeErrorLabel'
+  | 'runtimeProgress'
+  | 'runtimeDays'
   | 'runtimeResult'
-  | 'runtimeSummaryTitle'
+  | 'runtimeSummaryTitle',
+  LocalizedText
 > = {
   appTitle: {
     de: 'Simulator-Startkonfiguration',
@@ -495,6 +498,28 @@ const LANGUAGE_OPTIONS: Array<{ code: Language; label: string }> = [
   { code: 'ja', label: '日本語' },
 ];
 
+const resolveBrowserLanguage = (): Language => {
+  if (typeof navigator === 'undefined') {
+    return 'de';
+  }
+
+  const browserLanguages = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const browserLanguage of browserLanguages) {
+    const normalized = browserLanguage.toLowerCase();
+    if (normalized.startsWith('de')) {
+      return 'de';
+    }
+    if (normalized.startsWith('en')) {
+      return 'en';
+    }
+    if (normalized.startsWith('ja') || normalized.startsWith('jp')) {
+      return 'ja';
+    }
+  }
+
+  return 'de';
+};
+
 const LEAGUE_LOCALES: Record<string, LocalizedText> = {
   '1': { de: 'Freundes-Liga', en: 'Friendly League', ja: 'フレンドリーグ' },
   '2': { de: 'Flott-Liga', en: 'Quick League', ja: 'クイックリーグ' },
@@ -715,7 +740,7 @@ const normalizePurchasePlanIds = (ids: string[]): string[] =>
 const range = (start: number, end: number): number[] =>
   Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => start + i);
 
-const toInt = (value: string | number, fallback = 0): number => {
+const toInt = (value: string | number | null | undefined, fallback = 0): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 };
@@ -907,10 +932,7 @@ const NumberInput = ({
   );
 };
 
-const safeCopyValue = <T,>(obj: T): T => JSON.parse(JSON.stringify(obj));
-
-const createDefaultLevelMap = (items: CatalogItem[], value = 1): Record<string, number> =>
-  Object.fromEntries(items.map((entry) => [String(entry.id), value]));
+const safeCopyValue = <T,>(obj: T): T => JSON.parse(JSON.stringify(obj)) as T;
 
 const createLevelMapWithOverrides = (
   items: CatalogItem[],
@@ -923,9 +945,6 @@ const createLevelMapWithOverrides = (
       overrides[entry.id] ?? fallback,
     ]),
   );
-
-const createDefaultEnabledMap = (items: CatalogItem[], count = 0): Record<string, boolean> =>
-  Object.fromEntries(items.map((entry, index) => [String(entry.id), index < count]));
 
 const createEnabledMapByIds = (items: CatalogItem[], enabledIds: string[]): Record<string, boolean> => {
   const enabled = new Set(enabledIds.map((id) => String(id)));
@@ -945,7 +964,7 @@ const normalizeTrainingUpgradeIds = (ids: string[]): string[] =>
 
 const selectedUpgradeIds = (items: Record<string, boolean>): string[] =>
   Object.entries(items)
-    .filter((entry): entry is [string, true] => entry[1] === true)
+    .filter((entry) => entry[1])
     .map(([id]) => id);
 
 async function loadJson<T>(path: string): Promise<T[]> {
@@ -993,7 +1012,7 @@ interface SimulationWorkerMessageFailure {
 type SimulationWorkerMessage = SimulationWorkerMessageSuccess | SimulationWorkerMessageFailure;
 
 function App() {
-  const [language, setLanguage] = useState<Language>('de');
+  const [language, setLanguage] = useState<Language>(resolveBrowserLanguage);
   const [options, setOptions] = useState<OptionData>({
     supports: [],
     decors: [],
@@ -1055,7 +1074,7 @@ function App() {
         }
       }
     };
-    loadRuntime();
+    void loadRuntime();
     return () => {
       active = false;
     };
@@ -1207,7 +1226,7 @@ function App() {
       }
     };
 
-    load();
+    void load();
   }, []);
 
   const leagueOptions = useMemo(() => {
@@ -1347,7 +1366,7 @@ function App() {
       null,
       2,
     );
-  }, [customSupportPlan, form, options, options.maxMagikarpRank]);
+  }, [customSupportPlan, form, options]);
 
   const handleStartStateChange = (key: StartStateScalarKey, value: number): void => {
     setForm((prev) => {
@@ -1362,9 +1381,22 @@ function App() {
     });
   };
 
-  const handlePolicyChange = (
-    key: PolicyStateScalarKey,
-    value: boolean | number | string | string[],
+  const handlePolicyChange = (key: PolicyStateScalarKey, value: boolean | number | string): void => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        policy: {
+          ...prev.policy,
+          [key]: value,
+        },
+      };
+    });
+  };
+
+  const handlePolicyArrayChange = (
+    key: 'allowed_berry_upgrades' | 'allowed_training_upgrades',
+    value: string[],
   ): void => {
     setForm((prev) => {
       if (!prev) return prev;
@@ -1578,9 +1610,9 @@ function App() {
     simulationWorkerRef.current = worker;
 
     try {
-    const careerTargetLeague = Math.max(0, options.leagues.length - 1);
+      const careerTargetLeague = Math.max(0, options.leagues.length - 1);
       const result = await new Promise<RuntimeResult>((resolve, reject) => {
-        const onMessage = (event: MessageEvent<SimulationWorkerMessage>): void => {
+        worker.onmessage = (event: MessageEvent<SimulationWorkerMessage>): void => {
           if (event.data.type === 'success') {
             resolve(event.data.result);
             return;
@@ -1590,7 +1622,6 @@ function App() {
           }
         };
 
-        worker.onmessage = onMessage;
         worker.onerror = () => {
           reject(new Error('Worker failed while running simulation.'));
         };
@@ -1901,7 +1932,7 @@ function App() {
                 <label>
                   <input
                     type="checkbox"
-                    checked={!!form.start_state.berry_enabled[berry.id]}
+                    checked={form.start_state.berry_enabled[berry.id]}
                     onChange={() => toggleBerry(berry.id)}
                   />
                   <span>
@@ -1928,7 +1959,7 @@ function App() {
                 <label>
                   <input
                     type="checkbox"
-                    checked={!!form.start_state.training_enabled[training.id]}
+                    checked={form.start_state.training_enabled[training.id]}
                     onChange={() => toggleTraining(training.id)}
                   />
                   <span>
@@ -2028,7 +2059,7 @@ function App() {
               multiple
               value={form.policy.allowed_berry_upgrades}
               onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                handlePolicyChange(
+                handlePolicyArrayChange(
                   'allowed_berry_upgrades',
                   Array.from(e.target.selectedOptions).map((item) => item.value),
                 )
@@ -2049,7 +2080,7 @@ function App() {
               multiple
               value={form.policy.allowed_training_upgrades}
               onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                handlePolicyChange(
+                handlePolicyArrayChange(
                   'allowed_training_upgrades',
                   Array.from(e.target.selectedOptions).map((item) => item.value),
                 )
@@ -2111,7 +2142,12 @@ function App() {
           </div>
         )}
         <div className="actions">
-          <button onClick={runSimulationInBrowser} disabled={runtimeStatus !== 'ready' || simulationRunning}>
+          <button
+            onClick={() => {
+              void runSimulationInBrowser();
+            }}
+            disabled={runtimeStatus !== 'ready' || simulationRunning}
+          >
             {runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language)}
           </button>
         </div>
@@ -2141,7 +2177,11 @@ function App() {
             <h2>{t('resultJsonTitle', language)}</h2>
             <textarea className="json-output" value={config} readOnly rows={24} />
             <div className="actions">
-              <button onClick={copyToClipboard}>
+              <button
+                onClick={() => {
+                  void copyToClipboard();
+                }}
+              >
                 {copiedToClipboard ? t('copiedToClipboard', language) : t('copyToClipboard', language)}
               </button>
               <button onClick={downloadConfig}>{t('downloadConfig', language)}</button>

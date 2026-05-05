@@ -2,10 +2,10 @@ export interface RuntimeApi {
   runWallTimeSimulation: (
     startConfigJson: string,
     seed: bigint,
-    maxActions: u32,
-    maxDays: u32,
-    sessionsPerDay: u8,
-    targetLeague: u32,
+    maxActions: number,
+    maxDays: number,
+    sessionsPerDay: number,
+    targetLeague: number,
   ) => string;
   runWallTimeSimulationSummary?: (
     startConfigJson: string,
@@ -49,7 +49,16 @@ const isTypeErrorCannotConvert = (error: unknown): boolean => {
 
 type WallTimeCall = (
   startConfigJson: string,
-  seed: bigint | number,
+  seed: bigint,
+  maxActions: number,
+  maxDays: number,
+  sessionsPerDay: number,
+  targetLeague: number,
+) => string;
+
+type LegacyWallTimeCall = (
+  startConfigJson: string,
+  seed: number,
   maxActions: number,
   maxDays: number,
   sessionsPerDay: number,
@@ -80,7 +89,7 @@ const callWithSeedFallback = (
     if (!isTypeErrorCannotConvert(error)) {
       throw error;
     }
-    return fn(
+    return (fn as unknown as LegacyWallTimeCall)(
       options.startConfigJson,
       options.seed,
       options.maxActions,
@@ -347,7 +356,7 @@ const pickSummaryObject = (
 
 export const parseRuntimeSummary = (raw: string): RuntimeSummary | null => {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
     if (parsed == null || typeof parsed !== 'object') {
       return null;
     }
@@ -357,7 +366,7 @@ export const parseRuntimeSummary = (raw: string): RuntimeSummary | null => {
   }
 };
 
-export const runSimulation = async (
+export const runSimulation = (
   runtimeApi: RuntimeApi,
   config: string,
   options?: {
@@ -377,7 +386,7 @@ export const runSimulation = async (
     sessionsPerDay: options?.sessionsPerDay ?? 10,
     targetLeague: options?.targetLeague ?? 10,
   });
-  return {
+  return Promise.resolve({
     payload,
     summary: parseRuntimeSummary(
       runtimeApi.runWallTimeSimulationSummary
@@ -391,11 +400,11 @@ export const runSimulation = async (
           })
         : payload,
     ),
-  };
+  });
 };
 
 const importRuntimeModule = (path: string): Promise<unknown> => {
-  return Function('path', 'return import(path)')('' + path);
+  return import(/* @vite-ignore */ path) as Promise<unknown>;
 };
 
 export interface WebAssemblyRuntimeApi {
@@ -419,8 +428,8 @@ export interface WebAssemblyRuntimeApi {
 }
 
 export const loadRuntimeApi = async (): Promise<RuntimeApi> => {
-  const wasmUrl = new URL('../wasm/karpador_sim.js', import.meta.url).href;
-  const module = (await importRuntimeModule(wasmUrl)) as unknown as WebAssemblyRuntimeApi;
+  const wasmUrl = new URL(/* @vite-ignore */ '../wasm/karpador_sim.js', import.meta.url).href;
+  const module = (await importRuntimeModule(wasmUrl)) as WebAssemblyRuntimeApi;
   if (typeof module.default === 'function') {
     await module.default();
   }

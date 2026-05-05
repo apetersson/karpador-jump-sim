@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "build:wasm": "cd ../rust && wasm-pack build --target web --out-dir ../web/public/wasm --out-name karpador_sim --release",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:with-wasm": "pnpm run build:wasm && pnpm run test",
     "preview": "vite preview"
@@ -16,13 +18,20 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
+    "@types/node": "^25.6.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.2",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
     "typescript": "^5.8.2",
-    "vite": "^5.4.10",
-    "vitest": "^3.1.3"
+    "typescript-eslint": "^8.59.0",
+    "vite": "^8.0.9",
+    "vitest": "^4.1.4"
   },
   "packageManager": "pnpm@10.17.0"
 }
