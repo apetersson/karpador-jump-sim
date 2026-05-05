@@ -5,16 +5,32 @@ Ideally max 3 lines, not more. If that is not possible, split up the commit into
 
 # Deploy to GitHub Pages
 
-1. Build the web UI: `cd web && pnpm install && pnpm build`
-2. Create a temp worktree on `gh-pages`: `git worktree add -B gh-pages /tmp/gh-pages HEAD`
-3. Copy the built site into it, commit, and push:
-   ```sh
-   cd /tmp/gh-pages
-   find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-   cp -R $REPO_ROOT/web/dist/.* .
-   git add -A && git commit -m "chore: deploy web UI"
-   git push origin gh-pages
-   ```
-4. Clean up: `git worktree remove /tmp/gh-pages`
+GitHub Pages is configured to serve `main` from `/docs` at https://apetersson.github.io/karpador-jump-sim/.
+Do not deploy through a `gh-pages` branch; that branch is obsolete and should not be recreated.
 
-The site is served from the `gh-pages` branch root at https://apetersson.github.io/karpador-jump-sim/
+1. Build and validate the web UI:
+   ```sh
+   cd web
+   pnpm install
+   pnpm run typecheck
+   pnpm run lint
+   pnpm run build
+   pnpm run test
+   ```
+2. Sync the built site into `/docs` from the repo root:
+   ```sh
+   rm -f web/dist/.DS_Store docs/.DS_Store
+   rsync -a --delete --exclude '.DS_Store' web/dist/ docs/
+   ```
+3. Commit the docs deployment on `main`:
+   ```sh
+   git add docs
+   git commit -m "chore(web): deploy frontend to docs"
+   git push origin main
+   ```
+4. Optionally verify the Pages build and served asset hashes:
+   ```sh
+   gh api repos/apetersson/karpador-jump-sim/pages --jq '{status,source,html_url}'
+   gh api repos/apetersson/karpador-jump-sim/pages/builds/latest --jq '{status,commit,error}'
+   curl -fsSL 'https://apetersson.github.io/karpador-jump-sim/?cachebust='$(date +%s) | rg -o 'assets/[^" ]+'
+   ```
