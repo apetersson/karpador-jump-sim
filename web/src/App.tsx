@@ -1915,6 +1915,8 @@ function App() {
       : runtimeStatus === 'ready'
         ? t('runtimeReady', language)
         : t('runtimeUnavailable', language);
+  const runtimeButtonLabel =
+    runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language);
 
   return (
     <main className="app">
@@ -1934,6 +1936,16 @@ function App() {
           {t('headerPath', language)} <code>simulator/examples/start_config.json</code> -{' '}
           {t('headerNote', language)}
         </p>
+        <div className="actions">
+          <button
+            onClick={() => {
+              void runSimulationInBrowser();
+            }}
+            disabled={runtimeStatus !== 'ready' || simulationRunning}
+          >
+            {runtimeButtonLabel}
+          </button>
+        </div>
       </header>
 
       <section className="grid">
@@ -2324,7 +2336,7 @@ function App() {
             }}
             disabled={runtimeStatus !== 'ready' || simulationRunning}
           >
-            {runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language)}
+            {runtimeButtonLabel}
           </button>
         </div>
         {simulationError && <p className="error-text">{t('runtimeErrorLabel', language)}: {simulationError}</p>}
