@@ -2007,7 +2007,7 @@ function App() {
         : t('runtimeUnavailable', language);
   const runtimeButtonLabel =
     runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language);
-  const runSimulationFromHeader = (): void => {
+  const runSimulationAndScrollToResults = (): void => {
     scrollToResultWhenReadyRef.current = true;
     (runtimeResultRef.current ?? runtimeSectionRef.current)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     void runSimulationInBrowser();
@@ -2034,7 +2034,7 @@ function App() {
         <div className="actions">
           <button
             onClick={() => {
-              runSimulationFromHeader();
+              runSimulationAndScrollToResults();
             }}
             disabled={runtimeStatus !== 'ready' || simulationRunning}
           >
@@ -2427,7 +2427,7 @@ function App() {
         <div className="actions">
           <button
             onClick={() => {
-              void runSimulationInBrowser();
+              runSimulationAndScrollToResults();
             }}
             disabled={runtimeStatus !== 'ready' || simulationRunning}
           >
