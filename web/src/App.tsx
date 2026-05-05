@@ -485,6 +485,7 @@ type UiTextKey = keyof typeof UI_TEXT;
 
 const t = (key: UiTextKey, language: Language): string => UI_TEXT[key][language];
 const SIMULATION_MAX_DAYS = 240;
+const START_STATE_URL_PARAM = 'start_state';
 
 const interpolateText = (text: string, values: Record<string, string | number>): string =>
   Object.entries(values).reduce(
@@ -934,6 +935,113 @@ const NumberInput = ({
 
 const safeCopyValue = <T,>(obj: T): T => JSON.parse(JSON.stringify(obj)) as T;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value != null && typeof value === 'object' && !Array.isArray(value);
+
+const encodeJsonForUrl = (value: unknown): string => {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+};
+
+const decodeJsonFromUrl = (value: string): unknown => {
+  const base64 = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+};
+
+const readStartStateFromUrl = (): Partial<StartState> | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const encoded = new URLSearchParams(window.location.search).get(START_STATE_URL_PARAM);
+  if (!encoded) {
+    return null;
+  }
+  try {
+    const decoded = decodeJsonFromUrl(encoded);
+    return isRecord(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeStartStateToUrl = (startState: StartState): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set(START_STATE_URL_PARAM, encodeJsonForUrl(startState));
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+};
+
+const mergeNumberRecord = (
+  fallback: Record<string, number>,
+  value: unknown,
+  itemFallback = 1,
+): Record<string, number> => {
+  if (!isRecord(value)) {
+    return fallback;
+  }
+  return Object.fromEntries(
+    Object.keys(fallback).map((key) => {
+      const nextValue = value[key];
+      return [
+        key,
+        toInt(
+          typeof nextValue === 'string' || typeof nextValue === 'number' ? nextValue : undefined,
+          fallback[key] ?? itemFallback,
+        ),
+      ];
+    }),
+  );
+};
+
+const mergeBooleanRecord = (fallback: Record<string, boolean>, value: unknown): Record<string, boolean> => {
+  if (!isRecord(value)) {
+    return fallback;
+  }
+  return Object.fromEntries(Object.keys(fallback).map((key) => [key, value[key] === true]));
+};
+
+const mergeStringArray = (fallback: string[], value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  return value.filter((entry): entry is string => typeof entry === 'string');
+};
+
+const mergeStartState = (fallback: StartState, value: Partial<StartState> | null): StartState => {
+  if (!value || !isRecord(value)) {
+    return fallback;
+  }
+  return {
+    player_rank: toInt(value.player_rank, fallback.player_rank),
+    gold: toInt(value.gold, fallback.gold),
+    diamonds: toInt(value.diamonds, fallback.diamonds),
+    league: toInt(value.league, fallback.league),
+    competition: toInt(value.competition, fallback.competition),
+    generation: toInt(value.generation, fallback.generation),
+    retirements: toInt(value.retirements, fallback.retirements),
+    magikarp_level: toInt(value.magikarp_level, fallback.magikarp_level),
+    magikarp_kp: toInt(value.magikarp_kp, fallback.magikarp_kp),
+    candy: toInt(value.candy, fallback.candy),
+    training_sodas: toInt(value.training_sodas, fallback.training_sodas),
+    skill_herbs: toInt(value.skill_herbs, fallback.skill_herbs),
+    league_aids: toInt(value.league_aids, fallback.league_aids),
+    owned_supports: mergeStringArray(fallback.owned_supports, value.owned_supports).map(toSupportTargetId),
+    owned_decors: mergeStringArray(fallback.owned_decors, value.owned_decors).map(toDecorTargetId),
+    berry_levels: mergeNumberRecord(fallback.berry_levels, value.berry_levels),
+    training_levels: mergeNumberRecord(fallback.training_levels, value.training_levels),
+    berry_enabled: mergeBooleanRecord(fallback.berry_enabled, value.berry_enabled),
+    training_enabled: mergeBooleanRecord(fallback.training_enabled, value.training_enabled),
+  };
+};
+
 const createLevelMapWithOverrides = (
   items: CatalogItem[],
   overrides: Record<string, number>,
@@ -1180,35 +1288,37 @@ function App() {
         const targetAllowedBerryUpgrades = ['food_1', 'food_2', 'food_6'];
         const targetAllowedTrainingUpgrades = ['training_1', 'training_2'];
 
+        const defaultStartState: StartState = {
+          player_rank: 25,
+          gold: 12345,
+          diamonds: 300,
+          league: initialLeague,
+          competition: initialCompetition,
+          generation: 18,
+          retirements: 17,
+          magikarp_level: 31,
+          magikarp_kp: 0,
+          candy: 4,
+          training_sodas: 2,
+          skill_herbs: 1,
+          league_aids: 0,
+          owned_supports: Array.from(
+            new Set([
+              ...['pikachu', 'charizard', 'piplup', 'meowth'].map((id) => toSupportTargetId(id)),
+              ...unlockedSupports.map((id) => toSupportTargetId(id)),
+            ]),
+          ),
+          owned_decors: Array.from(
+            new Set(['shaymin_planter', 'octillery_pot', ...unlockedDecors.map((id) => toDecorTargetId(id))]),
+          ),
+          berry_levels: targetInitialBerryLevels,
+          training_levels: targetInitialTrainingLevels,
+          berry_enabled: createEnabledMapByIds(berries, targetAllowedBerryUpgrades),
+          training_enabled: createEnabledMapByIds(trainings, targetAllowedTrainingUpgrades),
+        };
+
         setForm({
-          start_state: {
-            player_rank: 25,
-            gold: 12345,
-            diamonds: 300,
-            league: initialLeague,
-            competition: initialCompetition,
-            generation: 18,
-            retirements: 17,
-            magikarp_level: 31,
-            magikarp_kp: 0,
-            candy: 4,
-            training_sodas: 2,
-            skill_herbs: 1,
-            league_aids: 0,
-            owned_supports: Array.from(
-              new Set([
-                ...['pikachu', 'charizard', 'piplup', 'meowth'].map((id) => toSupportTargetId(id)),
-                ...unlockedSupports.map((id) => toSupportTargetId(id)),
-              ]),
-            ),
-            owned_decors: Array.from(
-              new Set(['shaymin_planter', 'octillery_pot', ...unlockedDecors.map((id) => toDecorTargetId(id))]),
-            ),
-            berry_levels: targetInitialBerryLevels,
-            training_levels: targetInitialTrainingLevels,
-            berry_enabled: createEnabledMapByIds(berries, targetAllowedBerryUpgrades),
-            training_enabled: createEnabledMapByIds(trainings, targetAllowedTrainingUpgrades),
-          },
+          start_state: mergeStartState(defaultStartState, readStartStateFromUrl()),
           policy: {
             allowed_berry_upgrades: [...targetAllowedBerryUpgrades],
             allowed_training_upgrades: [...targetAllowedTrainingUpgrades],
@@ -1228,6 +1338,12 @@ function App() {
 
     void load();
   }, []);
+
+  useEffect(() => {
+    if (form) {
+      writeStartStateToUrl(form.start_state);
+    }
+  }, [form]);
 
   const leagueOptions = useMemo(() => {
     const keys = Object.keys(options.leagueCompetitionCounts)
