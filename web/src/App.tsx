@@ -486,6 +486,12 @@ type UiTextKey = keyof typeof UI_TEXT;
 const t = (key: UiTextKey, language: Language): string => UI_TEXT[key][language];
 const SIMULATION_MAX_DAYS = 240;
 const START_STATE_URL_PARAM = 'start_state';
+const STRATEGY_URL_PARAM = 'strategy';
+
+interface StrategyUrlState {
+  policy?: Partial<PolicyState>;
+  custom_plan?: string[];
+}
 
 const interpolateText = (text: string, values: Record<string, string | number>): string =>
   Object.entries(values).reduce(
@@ -970,12 +976,35 @@ const readStartStateFromUrl = (): Partial<StartState> | null => {
   }
 };
 
-const writeStartStateToUrl = (startState: StartState): void => {
+const readStrategyFromUrl = (): StrategyUrlState | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const encoded = new URLSearchParams(window.location.search).get(STRATEGY_URL_PARAM);
+  if (!encoded) {
+    return null;
+  }
+  try {
+    const decoded = decodeJsonFromUrl(encoded);
+    return isRecord(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeStateToUrl = (startState: StartState, policy: PolicyState, customPlan: string[]): void => {
   if (typeof window === 'undefined') {
     return;
   }
   const url = new URL(window.location.href);
   url.searchParams.set(START_STATE_URL_PARAM, encodeJsonForUrl(startState));
+  url.searchParams.set(
+    STRATEGY_URL_PARAM,
+    encodeJsonForUrl({
+      policy,
+      custom_plan: normalizePurchasePlanIds(customPlan).slice(0, 5),
+    }),
+  );
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 };
 
@@ -1041,6 +1070,34 @@ const mergeStartState = (fallback: StartState, value: Partial<StartState> | null
     training_enabled: mergeBooleanRecord(fallback.training_enabled, value.training_enabled),
   };
 };
+
+const mergePolicyState = (fallback: PolicyState, value: Partial<PolicyState> | null): PolicyState => {
+  if (!value || !isRecord(value)) {
+    return fallback;
+  }
+  return {
+    purchase_plan: typeof value.purchase_plan === 'string' ? value.purchase_plan : fallback.purchase_plan,
+    allow_training_sodas:
+      typeof value.allow_training_sodas === 'boolean' ? value.allow_training_sodas : fallback.allow_training_sodas,
+    allow_skill_herbs: typeof value.allow_skill_herbs === 'boolean' ? value.allow_skill_herbs : fallback.allow_skill_herbs,
+    allow_support_upgrades:
+      typeof value.allow_support_upgrades === 'boolean' ? value.allow_support_upgrades : fallback.allow_support_upgrades,
+    training_upgrade_share: toInt(value.training_upgrade_share, fallback.training_upgrade_share),
+    allowed_berry_upgrades: mergeStringArray(fallback.allowed_berry_upgrades, value.allowed_berry_upgrades),
+    allowed_training_upgrades: mergeStringArray(
+      fallback.allowed_training_upgrades,
+      value.allowed_training_upgrades,
+    ),
+    karpador_loss_risk_max_level_percent: toInt(
+      value.karpador_loss_risk_max_level_percent,
+      fallback.karpador_loss_risk_max_level_percent,
+    ),
+    sessions_per_day: toInt(value.sessions_per_day, fallback.sessions_per_day),
+  };
+};
+
+const mergeCustomPlan = (fallback: string[], value: unknown): string[] =>
+  mergeStringArray(fallback, value).map(normalizePurchasePlanTargetId).filter(Boolean).slice(0, 5);
 
 const createLevelMapWithOverrides = (
   items: CatalogItem[],
@@ -1317,19 +1374,22 @@ function App() {
           training_enabled: createEnabledMapByIds(trainings, targetAllowedTrainingUpgrades),
         };
 
+        const defaultPolicyState: PolicyState = {
+          allowed_berry_upgrades: [...targetAllowedBerryUpgrades],
+          allowed_training_upgrades: [...targetAllowedTrainingUpgrades],
+          purchase_plan: 'custom',
+          allow_training_sodas: true,
+          allow_skill_herbs: true,
+          allow_support_upgrades: true,
+          training_upgrade_share: 2500,
+          karpador_loss_risk_max_level_percent: 60,
+          sessions_per_day: 10,
+        };
+        const strategyFromUrl = readStrategyFromUrl();
+        setCustomSupportPlan(mergeCustomPlan([], strategyFromUrl?.custom_plan));
         setForm({
           start_state: mergeStartState(defaultStartState, readStartStateFromUrl()),
-          policy: {
-            allowed_berry_upgrades: [...targetAllowedBerryUpgrades],
-            allowed_training_upgrades: [...targetAllowedTrainingUpgrades],
-            purchase_plan: 'custom',
-            allow_training_sodas: true,
-            allow_skill_herbs: true,
-            allow_support_upgrades: true,
-            training_upgrade_share: 2500,
-            karpador_loss_risk_max_level_percent: 60,
-            sessions_per_day: 10,
-          },
+          policy: mergePolicyState(defaultPolicyState, strategyFromUrl?.policy ?? null),
         });
       } catch (err) {
         setLoadError(`Fehler beim Laden der Master-Daten: ${String(err)}`);
@@ -1341,9 +1401,9 @@ function App() {
 
   useEffect(() => {
     if (form) {
-      writeStartStateToUrl(form.start_state);
+      writeStateToUrl(form.start_state, form.policy, customSupportPlan);
     }
-  }, [form]);
+  }, [customSupportPlan, form]);
 
   const leagueOptions = useMemo(() => {
     const keys = Object.keys(options.leagueCompetitionCounts)
