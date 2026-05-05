@@ -5,7 +5,7 @@ import {
   ChangeEvent,
   useRef,
 } from 'react';
-import { loadRuntimeApi, type RuntimeApi, type RuntimeResult } from './runtime';
+import { loadRuntimeApi, type RuntimeApi, type RuntimeResult, type RuntimeSummary } from './runtime';
 
 type Language = 'de' | 'en' | 'ja';
 
@@ -108,8 +108,6 @@ interface FormState {
 const UI_TEXT: Record<
   | 'appTitle'
   | 'languageLabel'
-  | 'headerPath'
-  | 'headerNote'
   | 'startStateSection'
   | 'policySection'
   | 'startStatePlayerRank'
@@ -159,6 +157,8 @@ const UI_TEXT: Record<
   | 'numberOutOfRange'
   | 'runtimeSection'
   | 'runtimeRun'
+  | 'runtimeSimulationCount'
+  | 'runtimeAveragePrefix'
   | 'runtimeLoading'
   | 'runtimeReady'
   | 'runtimeUnavailable'
@@ -177,7 +177,6 @@ const UI_TEXT: Record<
   | 'runtimeDaysToMaster'
   | 'runtimeDiamondSpend'
   | 'runtimeTopPurchases'
-  | 'runtimeWarnings'
   | 'runtimeRawOutput',
   LocalizedText
 > = {
@@ -190,16 +189,6 @@ const UI_TEXT: Record<
     de: 'Sprache',
     en: 'Language',
     ja: '言語',
-  },
-  headerPath: {
-    de: 'Die Startkonfiguration liegt in',
-    en: 'Use this configuration file',
-    ja: '設定ファイルは次の場所です',
-  },
-  headerNote: {
-    de: 'Hinweis: league und competition in start_state sind 0-basiert (erste Position ist 0).',
-    en: 'Note: league and competition in start_state are 0-based (first entry is 0).',
-    ja: '注意: start_state の league と competition は0始まりです（最初は0）。',
   },
   startStateSection: {
     de: 'Startzustand',
@@ -446,6 +435,16 @@ const UI_TEXT: Record<
     en: 'Run in browser',
     ja: 'ブラウザで実行',
   },
+  runtimeSimulationCount: {
+    de: 'Anzahl Simulationen',
+    en: 'Number of sims',
+    ja: 'シミュレーション回数',
+  },
+  runtimeAveragePrefix: {
+    de: 'Durchschnitt aus {count} Simulationen',
+    en: 'Average of {count} sims',
+    ja: '{count} 回の平均',
+  },
   runtimeLoading: {
     de: 'Lädt Simulator-Runtime ...',
     en: 'Loading simulator runtime ...',
@@ -536,11 +535,6 @@ const UI_TEXT: Record<
     en: 'Items bought',
     ja: '購入アイテム',
   },
-  runtimeWarnings: {
-    de: 'Hinweise',
-    en: 'Notes',
-    ja: '注意',
-  },
   runtimeRawOutput: {
     de: 'Technische Rohdaten anzeigen',
     en: 'Show technical raw output',
@@ -552,6 +546,8 @@ type UiTextKey = keyof typeof UI_TEXT;
 
 const t = (key: UiTextKey, language: Language): string => UI_TEXT[key][language];
 const SIMULATION_MAX_DAYS = 240;
+const MIN_SIMULATION_COUNT = 1;
+const MAX_SIMULATION_COUNT = 5;
 const START_STATE_URL_PARAM = 'start_state';
 const STRATEGY_URL_PARAM = 'strategy';
 
@@ -852,7 +848,114 @@ const formatPurchasePlanOptionLabel = (
 ): string => `${label} (${cost} ${t('currencyDiamonds', language)})`;
 
 const formatDays = (days: number | null, language: Language): string =>
-  days == null ? '—' : `${days.toFixed(1)} ${t('runtimeDays', language)}`;
+  days == null
+    ? '—'
+    : `${days.toLocaleString(language, { maximumFractionDigits: 1 })} ${t('runtimeDays', language)}`;
+
+const formatSummaryNumber = (value: number, language: Language): string =>
+  value.toLocaleString(language, { maximumFractionDigits: Number.isInteger(value) ? 0 : 1 });
+
+const averageNumbers = (values: number[]): number =>
+  values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+
+const averageNullableNumbers = (values: Array<number | null>): number | null => {
+  const numericValues = values.filter((value): value is number => value != null);
+  return numericValues.length > 0 ? averageNumbers(numericValues) : null;
+};
+
+const summarizeOutcome = (summaries: RuntimeSummary[]): string => {
+  if (summaries.length === 1) {
+    return summaries[0].outcome;
+  }
+  const counts = new Map<string, number>();
+  summaries.forEach((summary) => counts.set(summary.outcome, (counts.get(summary.outcome) ?? 0) + 1));
+  const [outcome, count] = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0] ?? [
+    '',
+    0,
+  ];
+  return count === summaries.length ? outcome : `${outcome} (${count}/${summaries.length})`;
+};
+
+const averageDiamondSpendingByKind = (
+  summaries: RuntimeSummary[],
+): RuntimeSummary['diamond_spending_by_kind'] => {
+  const totals = new Map<string, number>();
+  summaries.forEach((summary) => {
+    summary.diamond_spending_by_kind.forEach((item) => {
+      totals.set(item.kind, (totals.get(item.kind) ?? 0) + item.amount);
+    });
+  });
+  return [...totals.entries()]
+    .map(([kind, amount]) => ({ kind, amount: amount / summaries.length }))
+    .sort((a, b) => b.amount - a.amount || a.kind.localeCompare(b.kind));
+};
+
+const averageDiamondSpendingByItem = (
+  summaries: RuntimeSummary[],
+): RuntimeSummary['diamond_spending_by_item'] => {
+  const totals = new Map<string, { kind: string; id: string; amount: number }>();
+  summaries.forEach((summary) => {
+    summary.diamond_spending_by_item.forEach((item) => {
+      const key = `${item.kind}::${item.id}`;
+      const total = totals.get(key) ?? { kind: item.kind, id: item.id, amount: 0 };
+      total.amount += item.amount;
+      totals.set(key, total);
+    });
+  });
+  return [...totals.values()]
+    .map((item) => ({ ...item, amount: item.amount / summaries.length }))
+    .sort((a, b) => b.amount - a.amount || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+};
+
+const parsePayload = (payload: string): unknown => {
+  try {
+    return JSON.parse(payload) as unknown;
+  } catch {
+    return payload;
+  }
+};
+
+const averageRuntimeResults = (
+  results: RuntimeResult[],
+  language: Language,
+): RuntimeResult => {
+  if (results.length === 1) {
+    return results[0];
+  }
+  const summaries = results
+    .map((result) => result.summary)
+    .filter((summary): summary is RuntimeSummary => summary != null);
+  if (summaries.length === 0) {
+    return {
+      payload: JSON.stringify(results.map((result) => parsePayload(result.payload)), null, 2),
+      summary: null,
+    };
+  }
+  const summary: RuntimeSummary = {
+    plan: summaries[0].plan,
+    outcome: summarizeOutcome(summaries),
+    wall_days: averageNumbers(summaries.map((entry) => entry.wall_days)),
+    sessions: averageNumbers(summaries.map((entry) => entry.sessions)),
+    warnings: Array.from(new Set(summaries.flatMap((entry) => entry.warnings))),
+    league: averageNumbers(summaries.map((entry) => entry.league)),
+    diamonds: averageNumbers(summaries.map((entry) => entry.diamonds)),
+    days_to_master_league: averageNullableNumbers(summaries.map((entry) => entry.days_to_master_league)),
+    diamonds_spent_total: averageNumbers(summaries.map((entry) => entry.diamonds_spent_total)),
+    diamond_spending_by_kind: averageDiamondSpendingByKind(summaries),
+    diamond_spending_by_item: averageDiamondSpendingByItem(summaries),
+  };
+  return {
+    payload: JSON.stringify(
+      {
+        note: interpolateText(t('runtimeAveragePrefix', language), { count: results.length }),
+        runs: results.map((result) => parsePayload(result.payload)),
+      },
+      null,
+      2,
+    ),
+    summary,
+  };
+};
 
 const isBattleRewardUnlocked = (
   item: CatalogItem,
@@ -1287,9 +1390,11 @@ function App() {
   const [runtimeStatus, setRuntimeStatus] = useState<string>('unavailable');
   const [runtimeLoadError, setRuntimeLoadError] = useState('');
   const [simulationRunning, setSimulationRunning] = useState(false);
+  const [simulationCount, setSimulationCount] = useState(MIN_SIMULATION_COUNT);
   const [simulationProgressDays, setSimulationProgressDays] = useState(0);
   const [simulationError, setSimulationError] = useState('');
   const [simulationResult, setSimulationResult] = useState<RuntimeResult | null>(null);
+  const [simulationResultCount, setSimulationResultCount] = useState(MIN_SIMULATION_COUNT);
   const simulationProgressTimerRef = useRef<number | null>(null);
   const simulationWorkerRef = useRef<Worker | null>(null);
   const runtimeSectionRef = useRef<HTMLElement | null>(null);
@@ -1866,29 +1971,15 @@ function App() {
     }
   };
 
-  const runSimulationInBrowser = async (): Promise<void> => {
-    if (!runtimeApi || !form) {
-      return;
-    }
-    setSimulationRunning(true);
-    setSimulationError('');
-    setSimulationProgressDays(0);
-    setSimulationResult(null);
-
-    const start = performance.now();
-    const maxDays = SIMULATION_MAX_DAYS;
-    simulationProgressTimerRef.current = window.setInterval(() => {
-      const elapsed = performance.now() - start;
-      const targetProgress = Math.min(maxDays - 1, Math.floor((elapsed / 7000) * maxDays));
-      setSimulationProgressDays((current) => Math.min(maxDays - 1, Math.max(current, targetProgress)));
-    }, 100);
-
+  const runSingleSimulationInWorker = async (
+    seed: number,
+    maxDays: number,
+    careerTargetLeague: number,
+  ): Promise<RuntimeResult> => {
     const worker = new Worker(new URL('./runtimeWorker.ts', import.meta.url), { type: 'module' });
     simulationWorkerRef.current = worker;
-
     try {
-      const careerTargetLeague = Math.max(0, options.leagues.length - 1);
-      const result = await new Promise<RuntimeResult>((resolve, reject) => {
+      return await new Promise<RuntimeResult>((resolve, reject) => {
         worker.onmessage = (event: MessageEvent<SimulationWorkerMessage>): void => {
           if (event.data.type === 'success') {
             resolve(event.data.result);
@@ -1906,14 +1997,63 @@ function App() {
           type: 'run',
           payload: {
             config,
-            seed: 42,
+            seed,
             maxActions: 100_000,
             maxDays,
-            sessionsPerDay: toInt(form.policy.sessions_per_day, 10),
+            sessionsPerDay: toInt(form?.policy.sessions_per_day, 10),
             targetLeague: careerTargetLeague,
           },
         });
       });
+    } finally {
+      worker.terminate();
+      if (simulationWorkerRef.current === worker) {
+        simulationWorkerRef.current = null;
+      }
+    }
+  };
+
+  const runSimulationInBrowser = async (): Promise<void> => {
+    if (!runtimeApi || !form) {
+      return;
+    }
+    setSimulationRunning(true);
+    setSimulationError('');
+    setSimulationProgressDays(0);
+    setSimulationResult(null);
+
+    const selectedSimulationCount = clampNumber(
+      simulationCount,
+      MIN_SIMULATION_COUNT,
+      MAX_SIMULATION_COUNT,
+    );
+    const start = performance.now();
+    const maxDays = SIMULATION_MAX_DAYS;
+    simulationProgressTimerRef.current = window.setInterval(() => {
+      const elapsed = performance.now() - start;
+      const targetProgress = Math.min(maxDays - 1, Math.floor((elapsed / (7000 * selectedSimulationCount)) * maxDays));
+      setSimulationProgressDays((current) => Math.min(maxDays - 1, Math.max(current, targetProgress)));
+    }, 100);
+
+    try {
+      const careerTargetLeague = Math.max(0, options.leagues.length - 1);
+      const results: RuntimeResult[] = [];
+      for (let index = 0; index < selectedSimulationCount; index += 1) {
+        const result = await runSingleSimulationInWorker(42 + index, maxDays, careerTargetLeague);
+        results.push(result);
+        const summaryDays = result.summary?.wall_days ?? maxDays;
+        setSimulationProgressDays(
+          Math.min(
+            maxDays,
+            Math.max(
+              Math.floor(((index + 1) / selectedSimulationCount) * maxDays),
+              clampNumber(summaryDays, 0, maxDays),
+            ),
+          ),
+        );
+      }
+      const result = averageRuntimeResults(results, language);
+      setSimulationResultCount(selectedSimulationCount);
 
       const summaryDays = result.summary?.wall_days;
       if (summaryDays != null) {
@@ -2023,6 +2163,27 @@ function App() {
     (runtimeResultRef.current ?? runtimeSectionRef.current)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     void runSimulationInBrowser();
   };
+  const renderRunControls = (): JSX.Element => (
+    <div className="actions run-actions">
+      <button
+        onClick={() => {
+          runSimulationAndScrollToResults();
+        }}
+        disabled={runtimeStatus !== 'ready' || simulationRunning}
+      >
+        {runtimeButtonLabel}
+      </button>
+      <NumberInput
+        language={language}
+        label={t('runtimeSimulationCount', language)}
+        value={simulationCount}
+        min={MIN_SIMULATION_COUNT}
+        max={MAX_SIMULATION_COUNT}
+        disabled={simulationRunning}
+        onCommit={setSimulationCount}
+      />
+    </div>
+  );
 
   return (
     <main className="app">
@@ -2038,20 +2199,7 @@ function App() {
             ))}
           </select>
         </label>
-        <p>
-          {t('headerPath', language)} <code>simulator/examples/start_config.json</code> -{' '}
-          {t('headerNote', language)}
-        </p>
-        <div className="actions">
-          <button
-            onClick={() => {
-              runSimulationAndScrollToResults();
-            }}
-            disabled={runtimeStatus !== 'ready' || simulationRunning}
-          >
-            {runtimeButtonLabel}
-          </button>
-        </div>
+        {renderRunControls()}
       </header>
 
       <section className="grid">
@@ -2444,16 +2592,7 @@ function App() {
             </div>
           </div>
         )}
-        <div className="actions">
-          <button
-            onClick={() => {
-              runSimulationAndScrollToResults();
-            }}
-            disabled={runtimeStatus !== 'ready' || simulationRunning}
-          >
-            {runtimeButtonLabel}
-          </button>
-        </div>
+        {renderRunControls()}
         {simulationError && <p className="error-text">{t('runtimeErrorLabel', language)}: {simulationError}</p>}
         {simulationResult && (
           <div className="runtime-output" ref={runtimeResultRef}>
@@ -2461,6 +2600,11 @@ function App() {
             {simulationResult.summary && (
               <div className="friendly-results">
                 <h4>{t('runtimeSummaryTitle', language)}</h4>
+                {simulationResultCount > 1 && (
+                  <p className="summary-note">
+                    {interpolateText(t('runtimeAveragePrefix', language), { count: simulationResultCount })}
+                  </p>
+                )}
                 <div className="result-card-grid">
                   <div className="result-card highlight">
                     <span>{t('runtimeOutcome', language)}</span>
@@ -2476,19 +2620,19 @@ function App() {
                   </div>
                   <div className="result-card">
                     <span>{t('runtimeSessions', language)}</span>
-                    <strong>{simulationResult.summary.sessions.toLocaleString()}</strong>
+                    <strong>{formatSummaryNumber(simulationResult.summary.sessions, language)}</strong>
                   </div>
                   <div className="result-card">
                     <span>{t('runtimeFinalLeague', language)}</span>
-                    <strong>{simulationResult.summary.league}</strong>
+                    <strong>{formatSummaryNumber(simulationResult.summary.league, language)}</strong>
                   </div>
                   <div className="result-card">
                     <span>{t('runtimeFinalDiamonds', language)}</span>
-                    <strong>{simulationResult.summary.diamonds}</strong>
+                    <strong>{formatSummaryNumber(simulationResult.summary.diamonds, language)}</strong>
                   </div>
                   <div className="result-card">
                     <span>{t('runtimeDiamondSpend', language)}</span>
-                    <strong>{simulationResult.summary.diamonds_spent_total}</strong>
+                    <strong>{formatSummaryNumber(simulationResult.summary.diamonds_spent_total, language)}</strong>
                   </div>
                 </div>
                 {simulationResult.summary.diamond_spending_by_item.length > 0 && (
@@ -2498,18 +2642,8 @@ function App() {
                       {simulationResult.summary.diamond_spending_by_item.map((item) => (
                         <li key={`${item.kind}-${item.id}`}>
                           <span>{purchaseItemLabel(item, language)}</span>
-                          <strong>{item.amount} {t('currencyDiamonds', language)}</strong>
+                          <strong>{formatSummaryNumber(item.amount, language)} {t('currencyDiamonds', language)}</strong>
                         </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {simulationResult.summary.warnings.length > 0 && (
-                  <div className="result-list warning-list">
-                    <h4>{t('runtimeWarnings', language)}</h4>
-                    <ul>
-                      {simulationResult.summary.warnings.map((warning) => (
-                        <li key={warning}>{warning}</li>
                       ))}
                     </ul>
                   </div>

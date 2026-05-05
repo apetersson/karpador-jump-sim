@@ -126,6 +126,18 @@ small {
   flex-wrap: wrap;
 }
 
+.run-actions {
+  align-items: end;
+}
+
+.run-actions .number-field {
+  width: 150px;
+}
+
+.run-actions .number-field input {
+  padding: 9px 10px;
+}
+
 .number-field {
   display: grid;
   gap: 6px;
@@ -179,6 +191,12 @@ button:hover {
 .friendly-results {
   display: grid;
   gap: 12px;
+}
+
+.summary-note {
+  margin: -4px 0 0;
+  color: #526070;
+  font-size: 13px;
 }
 
 .result-card-grid {
@@ -240,11 +258,6 @@ button:hover {
   gap: 12px;
   padding: 8px 0;
   border-top: 1px solid #e6e9f7;
-}
-
-.warning-list {
-  background: #fff8eb;
-  border-color: #f0d7a5;
 }
 
 .raw-output {
