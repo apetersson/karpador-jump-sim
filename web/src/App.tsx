@@ -166,7 +166,17 @@ const UI_TEXT: Record<
   | 'runtimeProgress'
   | 'runtimeDays'
   | 'runtimeResult'
-  | 'runtimeSummaryTitle',
+  | 'runtimeSummaryTitle'
+  | 'runtimeOutcome'
+  | 'runtimeWallDays'
+  | 'runtimeSessions'
+  | 'runtimeFinalLeague'
+  | 'runtimeFinalDiamonds'
+  | 'runtimeDaysToMaster'
+  | 'runtimeDiamondSpend'
+  | 'runtimeTopPurchases'
+  | 'runtimeWarnings'
+  | 'runtimeRawOutput',
   LocalizedText
 > = {
   appTitle: {
@@ -479,6 +489,56 @@ const UI_TEXT: Record<
     en: 'Simulation summary',
     ja: 'シミュレーション要約',
   },
+  runtimeOutcome: {
+    de: 'Ergebnis',
+    en: 'Outcome',
+    ja: '結果',
+  },
+  runtimeWallDays: {
+    de: 'Spielzeit',
+    en: 'Time played',
+    ja: 'プレイ時間',
+  },
+  runtimeSessions: {
+    de: 'Sessions',
+    en: 'Sessions',
+    ja: 'セッション',
+  },
+  runtimeFinalLeague: {
+    de: 'End-Liga',
+    en: 'Final league',
+    ja: '最終リーグ',
+  },
+  runtimeFinalDiamonds: {
+    de: 'Diamanten übrig',
+    en: 'Diamonds left',
+    ja: '残りダイヤ',
+  },
+  runtimeDaysToMaster: {
+    de: 'Bis Meister-Liga',
+    en: 'To Master League',
+    ja: 'マスターリーグまで',
+  },
+  runtimeDiamondSpend: {
+    de: 'Diamanten ausgegeben',
+    en: 'Diamonds spent',
+    ja: '使用ダイヤ',
+  },
+  runtimeTopPurchases: {
+    de: 'Gekaufte Items',
+    en: 'Items bought',
+    ja: '購入アイテム',
+  },
+  runtimeWarnings: {
+    de: 'Hinweise',
+    en: 'Notes',
+    ja: '注意',
+  },
+  runtimeRawOutput: {
+    de: 'Technische Rohdaten anzeigen',
+    en: 'Show technical raw output',
+    ja: '技術的な生データを表示',
+  },
 };
 
 type UiTextKey = keyof typeof UI_TEXT;
@@ -784,6 +844,9 @@ const formatPurchasePlanOptionLabel = (
   language: Language,
 ): string => `${label} (${cost} ${t('currencyDiamonds', language)})`;
 
+const formatDays = (days: number | null, language: Language): string =>
+  days == null ? '—' : `${days.toFixed(1)} ${t('runtimeDays', language)}`;
+
 const isBattleRewardUnlocked = (
   item: CatalogItem,
   selectedLeague: number,
@@ -823,6 +886,20 @@ const getUnlockedItemsForLeagueCompetition = (
     .filter((decor) => isBattleRewardUnlocked(decor, league, competition, options.competitionPositions))
     .map((decor) => decor.id);
   return { ownedSupports: unlockedSupports, ownedDecors: unlockedDecors };
+};
+
+const purchaseItemLabel = (item: { kind: string; id: string; amount: number }, language: Language): string => {
+  const id = item.id;
+  const supportEntry = Object.entries(SUPPORT_TARGET_IDS).find(([, targetId]) => targetId === id);
+  if (item.kind === 'support' && supportEntry) {
+    const locale = SUPPORT_LOCALES[supportEntry[0]];
+    return locale?.pokemon[language] ?? locale?.pokemon.en ?? id;
+  }
+  const decorEntry = Object.entries(DECOR_TARGET_IDS).find(([, targetId]) => targetId === id);
+  if (item.kind === 'decor' && decorEntry) {
+    return DECOR_LOCALES[decorEntry[0]]?.[language] ?? DECOR_LOCALES[decorEntry[0]]?.en ?? id;
+  }
+  return id;
 };
 
 const supportLabel = (support: CatalogItem, language: Language): string => {
@@ -1206,6 +1283,7 @@ function App() {
   const [simulationResult, setSimulationResult] = useState<RuntimeResult | null>(null);
   const simulationProgressTimerRef = useRef<number | null>(null);
   const simulationWorkerRef = useRef<Worker | null>(null);
+  const runtimeSectionRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -1917,6 +1995,10 @@ function App() {
         : t('runtimeUnavailable', language);
   const runtimeButtonLabel =
     runtimeStatus === 'loading' || simulationRunning ? t('runtimeRunning', language) : t('runtimeRun', language);
+  const runSimulationFromHeader = (): void => {
+    runtimeSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    void runSimulationInBrowser();
+  };
 
   return (
     <main className="app">
@@ -1939,7 +2021,7 @@ function App() {
         <div className="actions">
           <button
             onClick={() => {
-              void runSimulationInBrowser();
+              runSimulationFromHeader();
             }}
             disabled={runtimeStatus !== 'ready' || simulationRunning}
           >
@@ -2303,7 +2385,7 @@ function App() {
         </article>
       </section>
 
-      <section>
+      <section ref={runtimeSectionRef}>
         <h2>{t('runtimeSection', language)}</h2>
         <p className="status-line">
           {runtimeStatusText}
@@ -2343,13 +2425,69 @@ function App() {
         {simulationResult && (
           <div className="runtime-output">
             <h3>{t('runtimeResult', language)}</h3>
-            <textarea className="json-output runtime-json" value={simulationResult.payload} readOnly rows={14} />
             {simulationResult.summary && (
-              <>
+              <div className="friendly-results">
                 <h4>{t('runtimeSummaryTitle', language)}</h4>
-                <pre>{JSON.stringify(simulationResult.summary, null, 2)}</pre>
-              </>
+                <div className="result-card-grid">
+                  <div className="result-card highlight">
+                    <span>{t('runtimeOutcome', language)}</span>
+                    <strong>{simulationResult.summary.outcome}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeWallDays', language)}</span>
+                    <strong>{formatDays(simulationResult.summary.wall_days, language)}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeDaysToMaster', language)}</span>
+                    <strong>{formatDays(simulationResult.summary.days_to_master_league, language)}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeSessions', language)}</span>
+                    <strong>{simulationResult.summary.sessions.toLocaleString()}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeFinalLeague', language)}</span>
+                    <strong>{simulationResult.summary.league}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeFinalDiamonds', language)}</span>
+                    <strong>{simulationResult.summary.diamonds}</strong>
+                  </div>
+                  <div className="result-card">
+                    <span>{t('runtimeDiamondSpend', language)}</span>
+                    <strong>{simulationResult.summary.diamonds_spent_total}</strong>
+                  </div>
+                </div>
+                {simulationResult.summary.diamond_spending_by_item.length > 0 && (
+                  <div className="result-list">
+                    <h4>{t('runtimeTopPurchases', language)}</h4>
+                    <ul>
+                      {simulationResult.summary.diamond_spending_by_item.map((item) => (
+                        <li key={`${item.kind}-${item.id}`}>
+                          <span>{purchaseItemLabel(item, language)}</span>
+                          <strong>{item.amount} {t('currencyDiamonds', language)}</strong>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {simulationResult.summary.warnings.length > 0 && (
+                  <div className="result-list warning-list">
+                    <h4>{t('runtimeWarnings', language)}</h4>
+                    <ul>
+                      {simulationResult.summary.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
             )}
+            <details className="raw-output">
+              <summary>{t('runtimeRawOutput', language)}</summary>
+              <textarea className="json-output runtime-json" value={simulationResult.payload} readOnly rows={14} />
+              {simulationResult.summary && <pre>{JSON.stringify(simulationResult.summary, null, 2)}</pre>}
+            </details>
           </div>
         )}
       </section>
