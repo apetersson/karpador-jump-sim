@@ -70,7 +70,7 @@ The v1 policy models the requested F2P player:
 
 `run --start-config <file.json>` accepts a JSON file with two optional blocks:
 
-- `start_state`: patches the initial wall-time state, including `player_rank`, `gold`/`coins`, `diamonds`, `league`, `competition`, inventory items, owned supports/decors, berry levels, training levels, and current Magikarp level/KP.
+- `start_state`: patches the initial wall-time state, including `player_rank`, `gold`/`coins`, `diamonds`, `league`, `competition`, inventory items, owned supports/decors, berry levels, training levels, current Magikarp level/KP, and `ikesu_booster_level`.
 - `policy`: adjusts the active player policy, including `purchase_plan`, item usage flags, support upgrades, allowed berry/training upgrades, `training_upgrade_share`, and `karpador_loss_risk_max_level_percent`.
 
 IDs are validated against the loaded master data. Invalid support, decor, berry, training, or JSON purchase-plan IDs abort the run with a clear error. League and competition values use the simulator's zero-based indices, matching `final_state.league` and `final_state.competition` in JSON output.

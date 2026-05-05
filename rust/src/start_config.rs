@@ -39,6 +39,8 @@ pub struct StartStateConfig {
     #[serde(default)]
     pub league_aids: Option<u32>,
     #[serde(default)]
+    pub ikesu_booster_level: Option<u32>,
+    #[serde(default)]
     pub owned_supports: Vec<String>,
     #[serde(default)]
     pub owned_decors: Vec<String>,

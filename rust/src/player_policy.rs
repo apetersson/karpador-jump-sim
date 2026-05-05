@@ -19,6 +19,7 @@ pub enum WallAction {
     BuyShopItem { target: PurchaseTarget },
     UpgradeBerry { berry_id: String },
     UpgradeTraining { training_id: String },
+    UpgradePondBooster,
     Train,
     EatBerries { berry_id: String, count: u32 },
     LeagueFight { intent: LeagueFightIntent },
@@ -338,7 +339,9 @@ impl ActivePlayerPolicy {
                 let berry_cost = action_coin_cost(actions, &berry);
                 let training_cost = action_coin_cost(actions, &training);
                 match (berry_cost, training_cost) {
-                    (Some(berry_cost), Some(training_cost)) if berry_cost <= training_cost => Some(berry),
+                    (Some(berry_cost), Some(training_cost)) if berry_cost <= training_cost => {
+                        Some(berry)
+                    }
                     (Some(_), Some(_)) => Some(training),
                     (Some(_), None) => Some(berry),
                     (None, Some(_)) => Some(training),
@@ -484,6 +487,11 @@ impl WallTimePolicy for ActivePlayerPolicy {
         if let Some(action) = self.upgrade_with_ratio(state, actions) {
             return PolicyDecision::Execute(action);
         }
+        if let Some(action) = Self::find_action(actions, |action| {
+            matches!(action, WallAction::UpgradePondBooster)
+        }) {
+            return PolicyDecision::Execute(action);
+        }
         if let Some(action) =
             Self::find_action(actions, |action| matches!(action, WallAction::Train))
         {
@@ -500,6 +508,18 @@ impl WallTimePolicy for ActivePlayerPolicy {
             if let Some(action) =
                 Self::eat_berries_action(state, actions, 3 - self.berries_eaten_before_fight)
             {
+                return PolicyDecision::Execute(action);
+            }
+        }
+        if state.is_magikarp_maxed() {
+            if let Some(action) = Self::find_action(actions, |action| {
+                matches!(
+                    action,
+                    WallAction::LeagueFight {
+                        intent: LeagueFightIntent::TryWin
+                    }
+                )
+            }) {
                 return PolicyDecision::Execute(action);
             }
         }

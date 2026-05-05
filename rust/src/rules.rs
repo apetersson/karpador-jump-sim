@@ -67,6 +67,7 @@ impl Rules for ApproxRules {
             max_stamina: 3,
             food_level: 1,
             training_level: 1,
+            ikesu_booster_level: 0,
             food_available: 3,
             max_food: 3,
             league: 0,
@@ -106,6 +107,9 @@ impl Rules for ApproxRules {
                 max_level,
                 kp: 0,
                 individual_bonus_permyriad: 0,
+                individual_bonus_type: 0,
+                pattern_id: 1,
+                pattern_group_id: 1,
                 pattern_rarity: 1,
                 foods_eaten: 0,
                 trainings_done: 0,
@@ -135,6 +139,9 @@ impl Rules for ApproxRules {
             max_level: self.max_level_for_rank(state.player_rank),
             kp: 0,
             individual_bonus_permyriad,
+            individual_bonus_type: 1,
+            pattern_id: 1,
+            pattern_group_id: 1,
             pattern_rarity,
             foods_eaten: 0,
             trainings_done: 0,
@@ -276,6 +283,7 @@ impl Rules for ApkRules {
             max_stamina: 3,
             food_level: 1,
             training_level: 1,
+            ikesu_booster_level: 0,
             food_available: 0,
             max_food: self.data.economy.home_food_max.value,
             league: 0,
@@ -316,6 +324,9 @@ impl Rules for ApkRules {
                 max_level,
                 kp: 0,
                 individual_bonus_permyriad: 0,
+                individual_bonus_type: 0,
+                pattern_id: 1,
+                pattern_group_id: 1,
                 pattern_rarity: 1,
                 foods_eaten: 0,
                 trainings_done: 0,
@@ -326,26 +337,21 @@ impl Rules for ApkRules {
     }
 
     fn new_magikarp(&self, state: &GameState, rng: &mut impl Rng) -> MagikarpState {
-        let bonus_roll = rng.random_range(0..100);
-        let individual_bonus_permyriad = match bonus_roll {
-            0..=54 => 0,
-            55..=84 => 500,
-            85..=96 => 1_000,
-            _ => 2_000,
-        };
-        let pattern_rarity = match rng.random_range(0..100) {
-            0..=69 => 1,
-            70..=89 => 2,
-            90..=97 => 3,
-            _ => 4,
-        };
+        let pattern = self.data.fish_pattern(state.league, rng);
+        let bonus = self
+            .data
+            .fish_pattern_bonus(&pattern, rng)
+            .unwrap_or_default();
 
         MagikarpState {
             level: 1,
             max_level: self.max_level_for_rank(state.player_rank),
             kp: 0,
-            individual_bonus_permyriad,
-            pattern_rarity,
+            individual_bonus_permyriad: bonus.percent.saturating_mul(100),
+            individual_bonus_type: bonus.kind,
+            pattern_id: pattern.id,
+            pattern_group_id: pattern.group_id,
+            pattern_rarity: pattern.rarity,
             foods_eaten: 0,
             trainings_done: 0,
             wins: 0,

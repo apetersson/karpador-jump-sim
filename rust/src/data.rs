@@ -1,3 +1,4 @@
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Provenance, Provenanced, PurchaseKind, PurchasePlan, PurchaseTarget};
@@ -20,6 +21,10 @@ pub struct GameData {
     pub breeder_ranks: Vec<BreederRankData>,
     pub magikarp_ranks: Vec<MagikarpRankData>,
     pub jump_curve: Vec<JumpCurvePoint>,
+    pub rods: Vec<RodData>,
+    pub patterns: Vec<PatternData>,
+    pub pattern_bonuses: Vec<PatternBonusData>,
+    pub ikesu_booster_prices: Vec<IkesuBoosterPrice>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,6 +169,38 @@ pub struct JumpCurvePoint {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct RodData {
+    pub id: u32,
+    pub unlock_goal_id: u32,
+    pub gold_magikarp_permyriad: Provenanced<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PatternData {
+    pub id: u32,
+    pub group_id: u32,
+    pub name: &'static str,
+    pub freq: u32,
+    pub unlock_rod_id: u32,
+    pub rarity: u32,
+    pub bonus_ids: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PatternBonusData {
+    pub id: u32,
+    pub kind: u32,
+    pub percent: u32,
+    pub rarity: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IkesuBoosterPrice {
+    pub level: u32,
+    pub price: Provenanced<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct EconomyData {
     pub initial_diamonds: Provenanced<u32>,
     pub trainer_rank_up_diamonds: Provenanced<u32>,
@@ -182,6 +219,8 @@ pub struct EconomyData {
     pub diamond_miner_diamonds: Provenanced<u32>,
     pub diamond_miner_cooldown_minutes: Provenanced<u32>,
     pub diamond_miner_f2p_enabled: Provenanced<bool>,
+    pub retire_ikesu_bonus: Provenanced<u32>,
+    pub ikesu_bonus_max: Provenanced<u32>,
     pub food_respawn_minutes: Provenanced<u32>,
     pub food_respawn_seconds: Provenanced<u32>,
     pub home_food_max: Provenanced<u32>,
@@ -766,6 +805,16 @@ impl GameData {
                     Provenance::Wiki,
                     "Diamond Miner requires Exchange Tickets/IAP path; disabled for F2P simulations",
                 ),
+                retire_ikesu_bonus: Provenanced::new(
+                    10,
+                    Provenance::Assumption,
+                    "other_parameters retire_ikesu_bonus not available in approx dataset",
+                ),
+                ikesu_bonus_max: Provenanced::new(
+                    2_500,
+                    Provenance::Assumption,
+                    "other_parameters ikesu_bonus_max not available in approx dataset",
+                ),
                 food_respawn_minutes: Provenanced::new(
                     8,
                     Provenance::Disassembly,
@@ -792,6 +841,27 @@ impl GameData {
             breeder_ranks: Vec::new(),
             magikarp_ranks: Vec::new(),
             jump_curve: Vec::new(),
+            rods: vec![RodData {
+                id: 1,
+                unlock_goal_id: 0,
+                gold_magikarp_permyriad: Provenanced::new(300, Provenance::Wiki, wiki_src),
+            }],
+            patterns: vec![PatternData {
+                id: 1,
+                group_id: 1,
+                name: "Normal",
+                freq: 1,
+                unlock_rod_id: 1,
+                rarity: 1,
+                bonus_ids: vec![1],
+            }],
+            pattern_bonuses: vec![PatternBonusData {
+                id: 1,
+                kind: 1,
+                percent: 0,
+                rarity: 1,
+            }],
+            ikesu_booster_prices: Vec::new(),
         }
     }
 
@@ -838,6 +908,18 @@ impl GameData {
         let random_event_parameter_rows: Vec<RandomEventParametersRow> = json_rows(include_str!(
             "../decoded_master_data/random_event_parameters.json"
         ));
+        let rod_rows: Vec<RodRow> = json_rows(include_str!("../decoded_master_data/rod_list.json"));
+        let pattern_group_rows: Vec<PatternGroupRow> = json_rows(include_str!(
+            "../decoded_master_data/magikarp_pattern_group.json"
+        ));
+        let pattern_rows: Vec<PatternRow> = json_rows(include_str!(
+            "../decoded_master_data/magikarp_pattern_data.json"
+        ));
+        let pattern_bonus_rows: Vec<PatternBonusRow> = json_rows(include_str!(
+            "../decoded_master_data/magikarp_pattern_bonus_list.json"
+        ));
+        let ikesu_rows: Vec<IkesuBoosterRow> =
+            json_rows(include_str!("../decoded_master_data/ikesu_booster.json"));
         let other = other_rows
             .first()
             .expect("other_parameters.json contains one row");
@@ -1126,6 +1208,53 @@ impl GameData {
                 height: Provenanced::new(parse_u64(&row.height), Provenance::Asset, asset_src),
             })
             .collect::<Vec<_>>();
+        let pattern_rarity_by_group = pattern_group_rows
+            .iter()
+            .map(|row| (parse_u32(&row.id), parse_u32(&row.rarity)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let rods = rod_rows
+            .iter()
+            .map(|row| RodData {
+                id: parse_u32(&row.id),
+                unlock_goal_id: parse_u32(&row.unlock_goal_id),
+                gold_magikarp_permyriad: Provenanced::new(
+                    parse_u32(&row.gold_magikarp_per) * 100,
+                    Provenance::Asset,
+                    asset_src,
+                ),
+            })
+            .collect::<Vec<_>>();
+        let patterns = pattern_rows
+            .iter()
+            .map(|row| {
+                let group_id = parse_u32(&row.group_id);
+                PatternData {
+                    id: parse_u32(&row.id),
+                    group_id,
+                    name: leak_str(row.name_memo.clone()),
+                    freq: parse_u32(&row.freq),
+                    unlock_rod_id: parse_u32(&row.unlock_rod_id),
+                    rarity: pattern_rarity_by_group.get(&group_id).copied().unwrap_or(1),
+                    bonus_ids: csv_u32(&row.bonus_list),
+                }
+            })
+            .collect::<Vec<_>>();
+        let pattern_bonuses = pattern_bonus_rows
+            .iter()
+            .map(|row| PatternBonusData {
+                id: parse_u32(&row.id),
+                kind: parse_u32(&row.kind),
+                percent: parse_u32(&row.percent),
+                rarity: parse_u32(&row.rarity),
+            })
+            .collect::<Vec<_>>();
+        let ikesu_booster_prices = ikesu_rows
+            .iter()
+            .map(|row| IkesuBoosterPrice {
+                level: parse_u32(&row.level),
+                price: Provenanced::new(parse_u64(&row.price), Provenance::Asset, asset_src),
+            })
+            .collect::<Vec<_>>();
 
         let treasure_weight_total = treasure_rows
             .iter()
@@ -1295,6 +1424,16 @@ impl GameData {
                 diamond_miner_diamonds: Provenanced::new(0, Provenance::Asset, asset_src),
                 diamond_miner_cooldown_minutes: Provenanced::new(0, Provenance::Asset, asset_src),
                 diamond_miner_f2p_enabled: Provenanced::new(false, Provenance::Asset, asset_src),
+                retire_ikesu_bonus: Provenanced::new(
+                    parse_u32(&other.retire_ikesu_bonus),
+                    Provenance::Asset,
+                    asset_src,
+                ),
+                ikesu_bonus_max: Provenanced::new(
+                    parse_u32(&other.ikesu_bonus_max),
+                    Provenance::Asset,
+                    asset_src,
+                ),
                 food_respawn_minutes: Provenanced::new(
                     parse_u32(&other.home_food_sec).div_ceil(60).max(1),
                     Provenance::Asset,
@@ -1329,6 +1468,10 @@ impl GameData {
             breeder_ranks,
             magikarp_ranks,
             jump_curve,
+            rods,
+            patterns,
+            pattern_bonuses,
+            ikesu_booster_prices,
         }
     }
 
@@ -1419,6 +1562,67 @@ impl GameData {
                 .and_then(|item| item.acquisition.shop_price())
                 .unwrap_or(u32::MAX),
         }
+    }
+
+    pub fn current_rod_id(&self, cleared_leagues: u32) -> u32 {
+        self.rods
+            .iter()
+            .filter(|rod| cleared_leagues >= rod.unlock_goal_id)
+            .max_by_key(|rod| rod.id)
+            .map(|rod| rod.id)
+            .unwrap_or(1)
+    }
+
+    pub fn fish_pattern(&self, cleared_leagues: u32, rng: &mut impl Rng) -> PatternData {
+        let rod_id = self.current_rod_id(cleared_leagues);
+        let eligible = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.unlock_rod_id <= rod_id && pattern.freq > 0)
+            .collect::<Vec<_>>();
+        let total_weight = eligible.iter().map(|pattern| pattern.freq).sum::<u32>();
+        if total_weight == 0 {
+            return self.patterns.first().cloned().unwrap_or(PatternData {
+                id: 1,
+                group_id: 1,
+                name: "Normal",
+                freq: 1,
+                unlock_rod_id: 1,
+                rarity: 1,
+                bonus_ids: vec![1],
+            });
+        }
+        let mut roll = rng.random_range(0..total_weight);
+        for pattern in eligible {
+            if roll < pattern.freq {
+                return pattern.clone();
+            }
+            roll -= pattern.freq;
+        }
+        self.patterns.first().cloned().unwrap()
+    }
+
+    pub fn fish_pattern_bonus(
+        &self,
+        pattern: &PatternData,
+        rng: &mut impl Rng,
+    ) -> Option<PatternBonusData> {
+        let candidates = pattern
+            .bonus_ids
+            .iter()
+            .filter_map(|id| self.pattern_bonuses.iter().find(|bonus| bonus.id == *id))
+            .collect::<Vec<_>>();
+        candidates
+            .get(rng.random_range(0..candidates.len().max(1)))
+            .map(|bonus| (*bonus).clone())
+    }
+
+    pub fn ikesu_upgrade_price(&self, current_level: u32) -> Option<u64> {
+        let next_level = current_level.saturating_add(1);
+        self.ikesu_booster_prices
+            .iter()
+            .find(|row| row.level == next_level)
+            .map(|row| row.price.value)
     }
 
     pub fn berry_jp(&self, id: &str, rank: u32) -> Option<u128> {
@@ -1518,6 +1722,8 @@ impl GameData {
         count(self.economy.diamond_miner_diamonds.provenance);
         count(self.economy.diamond_miner_cooldown_minutes.provenance);
         count(self.economy.diamond_miner_f2p_enabled.provenance);
+        count(self.economy.retire_ikesu_bonus.provenance);
+        count(self.economy.ikesu_bonus_max.provenance);
         count(self.economy.food_respawn_minutes.provenance);
         count(self.economy.food_respawn_seconds.provenance);
         count(self.economy.home_food_max.provenance);
@@ -1569,6 +1775,12 @@ impl GameData {
         }
         for treasure in &self.treasure_rewards {
             count(treasure.provenance);
+        }
+        for rod in &self.rods {
+            count(rod.gold_magikarp_permyriad.provenance);
+        }
+        for price in &self.ikesu_booster_prices {
+            count(price.price.provenance);
         }
 
         let mut warnings = Vec::new();
@@ -1726,10 +1938,51 @@ struct OtherParametersRow {
     breeder_rank_up_dia_num: String,
     new_pattern_bonus_dia: String,
     first_coin_num: String,
+    retire_ikesu_bonus: String,
+    ikesu_bonus_max: String,
     home_food_sec: String,
     home_food_max_num: String,
     manaphy_fever_food_num: String,
     tutorial_clear_dia: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RodRow {
+    id: String,
+    unlock_goal_id: String,
+    gold_magikarp_per: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatternGroupRow {
+    id: String,
+    rarity: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatternRow {
+    id: String,
+    group_id: String,
+    name_memo: String,
+    freq: String,
+    unlock_rod_id: String,
+    bonus_list: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatternBonusRow {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "num")]
+    percent: String,
+    rarity: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IkesuBoosterRow {
+    level: String,
+    price: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1921,6 +2174,7 @@ fn support_skill(id: u32, row: &SupportPokemonRow) -> SupportSkill {
 fn decor_effect(bonus_type: u32, bonus_num: u32) -> DecorEffect {
     let mult = 10_000 + bonus_num * 100;
     match bonus_type {
+        1 => DecorEffect::KpPermyriad(mult),
         2 => DecorEffect::CoinPermyriad(mult),
         3 => DecorEffect::EventKpPermyriad(mult),
         4 => DecorEffect::EventCoinPermyriad(mult),

@@ -452,6 +452,9 @@ impl<R: Rules> WallTimeSimulator<R> {
         if let Some(league_aids) = config.league_aids {
             state.league_aids = league_aids;
         }
+        if let Some(level) = config.ikesu_booster_level {
+            state.ikesu_booster_level = level.min(self.data.economy.ikesu_bonus_max.value);
+        }
 
         for support_id in &config.owned_supports {
             let Some(index) = state
@@ -639,6 +642,9 @@ impl<R: Rules> WallTimeSimulator<R> {
     }
 
     fn has_immediate_action(&self, state: &GameState) -> bool {
+        if state.is_magikarp_maxed() {
+            return self.current_competition(state).is_some();
+        }
         self.home_treasure_available(state)
             || state.home_random_event_ready_at <= state.now()
             || state.pending_achievement_claims > 0
@@ -687,6 +693,10 @@ impl<R: Rules> WallTimeSimulator<R> {
 
     fn available_actions(&self, state: &GameState) -> Vec<AvailableAction> {
         let mut actions = Vec::new();
+        if state.is_magikarp_maxed() {
+            self.add_league_actions(state, &mut actions);
+            return actions;
+        }
         if self.home_treasure_available(state) {
             actions.push(available(
                 WallAction::CollectHomeTreasure,
@@ -783,6 +793,15 @@ impl<R: Rules> WallTimeSimulator<R> {
                 ));
             }
         }
+        if let Some(cost) = self.next_ikesu_booster_upgrade_cost(state) {
+            if state.coins >= cost {
+                actions.push(available_with_coin_cost(
+                    WallAction::UpgradePondBooster,
+                    "pond booster upgrade is affordable",
+                    cost,
+                ));
+            }
+        }
         if state.stamina > 0 {
             actions.push(available(
                 WallAction::Train,
@@ -808,34 +827,39 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
             }
         }
-        if self.current_competition(state).is_some() {
+        self.add_league_actions(state, &mut actions);
+        actions
+    }
+
+    fn add_league_actions(&self, state: &GameState, actions: &mut Vec<AvailableAction>) {
+        if self.current_competition(state).is_none() {
+            return;
+        }
+        actions.push(available(
+            WallAction::LeagueFight {
+                intent: LeagueFightIntent::IntentionallyLose,
+            },
+            if self.is_current_league_final_fight(state) {
+                "league champion fight can be intentionally lost"
+            } else {
+                "league battle can be entered"
+            },
+        ));
+        if self.expected_jump_clears_current_opponent(state) {
             actions.push(available(
                 WallAction::LeagueFight {
-                    intent: LeagueFightIntent::IntentionallyLose,
+                    intent: LeagueFightIntent::TryWin,
                 },
-                if self.is_current_league_final_fight(state) {
-                    "league champion fight can be intentionally lost"
-                } else {
-                    "league battle can be entered"
-                },
+                "league battle is strategically winnable",
             ));
-            if self.expected_jump_clears_current_opponent(state) {
-                actions.push(available(
-                    WallAction::LeagueFight {
-                        intent: LeagueFightIntent::TryWin,
-                    },
-                    "league battle is strategically winnable",
-                ));
-            } else if state.is_magikarp_maxed() {
-                actions.push(available(
-                    WallAction::LeagueFight {
-                        intent: LeagueFightIntent::TryWin,
-                    },
-                    "current Magikarp is max level",
-                ));
-            }
+        } else if state.is_magikarp_maxed() {
+            actions.push(available(
+                WallAction::LeagueFight {
+                    intent: LeagueFightIntent::TryWin,
+                },
+                "current Magikarp is max level",
+            ));
         }
-        actions
     }
 
     fn apply_action(
@@ -1087,6 +1111,24 @@ impl<R: Rules> WallTimeSimulator<R> {
                 }
                 self.advance_minutes(state, 1);
             }
+            WallAction::UpgradePondBooster => {
+                if let Some(cost) = self.next_ikesu_booster_upgrade_cost(state) {
+                    if state.coins >= cost {
+                        state.coins -= cost;
+                        state.ikesu_booster_level = state.ikesu_booster_level.saturating_add(1);
+                        log_event(
+                            action_log,
+                            state,
+                            "upgrade_pond_booster",
+                            format!(
+                                "pond booster to +{}% for {} coins",
+                                state.ikesu_booster_level, cost
+                            ),
+                        );
+                    }
+                }
+                self.advance_minutes(state, 1);
+            }
             WallAction::Train => {
                 let before_kp = state.magikarp.kp;
                 state.stamina = state.stamina.saturating_sub(1);
@@ -1095,13 +1137,10 @@ impl<R: Rules> WallTimeSimulator<R> {
                         state.now() + self.data.economy.stamina_respawn_minutes.value as u64;
                 }
                 let result = self.rules.training_result(rng);
-                let training_bonus = self.training_bonus_permyriad(state);
+                let training_bonus = self.training_kp_bonus_permyriad(state);
                 let (training_name, base_gain) = self.training_base_gain(state, rng);
-                let gained = self.training_result_gain(base_gain, result)
-                    * training_bonus as Kp
-                    * self.active_kp_gain_buff_permyriad(state) as Kp
-                    / 10_000
-                    / 10_000;
+                let gained =
+                    self.training_result_gain(base_gain, result) * training_bonus as Kp / 10_000;
                 state.magikarp.kp = state.magikarp.kp.saturating_add(gained);
                 state.magikarp.trainings_done += 1;
                 let random_event =
@@ -1199,9 +1238,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             SupportSkill::KpFlat { base } => {
                 let gain = support_param.unwrap_or(base)
                     * (1 + state.player_rank as Kp)
-                    * self.skill_kp_bonus_permyriad(state) as Kp
-                    * self.active_kp_gain_buff_permyriad(state) as Kp
-                    / 10_000
+                    * self.kp_bonus_permyriad(state, 10) as Kp
                     / 10_000
                     / 4;
                 state.magikarp.kp = state.magikarp.kp.saturating_add(gain);
@@ -1270,9 +1307,7 @@ impl<R: Rules> WallTimeSimulator<R> {
                 let (_, base_gain) = self.training_base_gain(state, rng);
                 let gain = self
                     .training_result_gain(base_gain, crate::rules::TrainingResult::Great)
-                    * self.skill_kp_bonus_permyriad(state) as Kp
-                    * self.active_kp_gain_buff_permyriad(state) as Kp
-                    / 10_000
+                    * self.kp_bonus_permyriad(state, 10) as Kp
                     / 10_000;
                 state.magikarp.kp = state.magikarp.kp.saturating_add(gain);
             }
@@ -1301,7 +1336,12 @@ impl<R: Rules> WallTimeSimulator<R> {
                     * self.league_coin_bonus_permyriad(state) as u64
                     / 10_000,
             );
-            return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueLoss);
+            let random_event =
+                self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueLoss);
+            if state.is_magikarp_maxed() {
+                self.retire_and_fish(state, rng);
+            }
+            return random_event;
         }
 
         let cheer_permyriad = match rng.random_range(0..100) {
@@ -1310,7 +1350,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             _ => 12_500_u64,
         };
         let own_jump = state.magikarp.kp * cheer_permyriad as Kp / 10_000;
-        if own_jump >= competition.opponent_jump_cm.value as Kp || state.is_magikarp_maxed() {
+        if own_jump >= competition.opponent_jump_cm.value as Kp {
             let won_league = state.league;
             let won_competition = state.competition;
             state.magikarp.wins += 1;
@@ -1346,22 +1386,30 @@ impl<R: Rules> WallTimeSimulator<R> {
             }
             return self.maybe_trigger_random_event(state, rng, RandomEventOccurrence::LeagueWin);
         } else if state.is_magikarp_maxed() {
-            let xp = self.rules.retirement_rank_xp(state) as u128
-                * self.trainer_exp_bonus_permyriad(state) as u128
-                / 10_000;
-            self.increase_trainer_exp(state, xp, "retirement xp".to_string());
-            state.retirements += 1;
-            state.generation += 1;
-            state.magikarp = self.rules.new_magikarp(state, rng);
-            self.discover_pattern(state);
-            self.check_fished_achievements(state);
-            self.check_retirement_achievements(state);
-            for berry in &mut state.berries {
-                berry.available = berry.max_available;
-            }
-            state.stamina = state.max_stamina;
+            self.retire_and_fish(state, rng);
         }
         None
+    }
+
+    fn retire_and_fish(&self, state: &mut GameState, rng: &mut impl Rng) {
+        let xp = self.rules.retirement_rank_xp(state) as u128
+            * self.trainer_exp_bonus_permyriad(state) as u128
+            / 10_000;
+        self.increase_trainer_exp(state, xp, "retirement xp".to_string());
+        state.ikesu_booster_level = state
+            .ikesu_booster_level
+            .saturating_add(self.data.economy.retire_ikesu_bonus.value)
+            .min(self.data.economy.ikesu_bonus_max.value);
+        state.retirements += 1;
+        state.generation += 1;
+        state.magikarp = self.rules.new_magikarp(state, rng);
+        self.discover_pattern(state);
+        self.check_fished_achievements(state);
+        self.check_retirement_achievements(state);
+        for berry in &mut state.berries {
+            berry.available = berry.max_available;
+        }
+        state.stamina = state.max_stamina;
     }
 
     fn current_competition(&self, state: &GameState) -> Option<&crate::data::CompetitionData> {
@@ -1918,9 +1966,10 @@ impl<R: Rules> WallTimeSimulator<R> {
             self.rules
                 .training_kp(state, crate::rules::TrainingResult::Normal),
         );
-        (self
-            .apply_magikarp_bonus(state, base.saturating_mul(percent as Kp) / 100)
-            .saturating_mul(self.event_kp_bonus_permyriad(state) as Kp)
+        (base
+            .saturating_mul(percent as Kp)
+            .saturating_mul(self.kp_bonus_permyriad(state, 3) as Kp)
+            / 100
             / 10_000)
             .max(1)
     }
@@ -2319,11 +2368,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .data
             .berry_jp(berry.id, berry.level)
             .unwrap_or(self.data.berries[index].base_kp.value);
-        self.apply_magikarp_bonus(state, base)
-            * self.food_kp_bonus_permyriad(state) as Kp
-            * self.active_kp_gain_buff_permyriad(state) as Kp
-            / 10_000
-            / 10_000
+        base.saturating_mul(self.kp_bonus_permyriad(state, 6) as Kp) / 10_000
     }
 
     fn training_base_gain(&self, state: &GameState, rng: &mut impl Rng) -> (&'static str, Kp) {
@@ -2343,7 +2388,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .map(|training| training.level)
             .unwrap_or(state.training_level);
         let base = self.data.training_jp(training.id, level).unwrap_or(0);
-        (training.name, self.apply_magikarp_bonus(state, base))
+        (training.name, base)
     }
 
     fn training_upgrade_cost(&self, state: &GameState, index: usize) -> u64 {
@@ -2375,11 +2420,41 @@ impl<R: Rules> WallTimeSimulator<R> {
         base * mult / 100
     }
 
-    fn apply_magikarp_bonus(&self, state: &GameState, base: Kp) -> Kp {
-        base.saturating_mul(10_000 + state.magikarp.individual_bonus_permyriad as Kp) / 10_000
+    fn coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+        let decor_bonus = state
+            .decors
+            .iter()
+            .enumerate()
+            .filter(|(_, decor)| decor.owned)
+            .fold(10_000, |acc, (index, _)| {
+                match self.data.decors[index].effect {
+                    DecorEffect::CoinPermyriad(mult) => combine_permyriad(acc, mult),
+                    _ => acc,
+                }
+            });
+        combine_permyriad(decor_bonus, self.individual_bonus_permyriad(state, 4))
     }
 
-    fn coin_bonus_permyriad(&self, state: &GameState) -> u32 {
+    fn training_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
+        self.kp_bonus_permyriad(state, 7)
+    }
+
+    fn kp_bonus_permyriad(&self, state: &GameState, specific_bonus_type: u32) -> u32 {
+        [
+            self.all_kp_bonus_permyriad(state),
+            self.decor_kp_bonus_permyriad(state, specific_bonus_type),
+            self.individual_bonus_permyriad(
+                state,
+                individual_kind_for_kp_type(specific_bonus_type),
+            ),
+            self.ikesu_booster_bonus_permyriad(state),
+            self.active_kp_gain_buff_permyriad(state),
+        ]
+        .into_iter()
+        .fold(10_000, combine_permyriad)
+    }
+
+    fn all_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
         state
             .decors
             .iter()
@@ -2387,21 +2462,24 @@ impl<R: Rules> WallTimeSimulator<R> {
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
-                    DecorEffect::CoinPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::KpPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 }
             })
     }
 
-    fn training_bonus_permyriad(&self, state: &GameState) -> u32 {
+    fn decor_kp_bonus_permyriad(&self, state: &GameState, bonus_type: u32) -> u32 {
         state
             .decors
             .iter()
             .enumerate()
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
-                match self.data.decors[index].effect {
-                    DecorEffect::TrainingPermyriad(mult) => acc * mult / 10_000,
+                match (&self.data.decors[index].effect, bonus_type) {
+                    (DecorEffect::EventKpPermyriad(mult), 3)
+                    | (DecorEffect::FoodKpPermyriad(mult), 6)
+                    | (DecorEffect::TrainingPermyriad(mult), 7)
+                    | (DecorEffect::SkillKpPermyriad(mult), 10) => combine_permyriad(acc, *mult),
                     _ => acc,
                 }
             })
@@ -2415,7 +2493,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
-                    DecorEffect::TrainingEventPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::TrainingEventPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 }
             })
@@ -2429,7 +2507,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
-                    DecorEffect::LeagueEventPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::LeagueEventPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 }
             })
@@ -2443,49 +2521,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
-                    DecorEffect::EventCoinPermyriad(mult) => acc * mult / 10_000,
-                    _ => acc,
-                }
-            })
-    }
-
-    fn event_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
-        state
-            .decors
-            .iter()
-            .enumerate()
-            .filter(|(_, decor)| decor.owned)
-            .fold(10_000, |acc, (index, _)| {
-                match self.data.decors[index].effect {
-                    DecorEffect::EventKpPermyriad(mult) => acc * mult / 10_000,
-                    _ => acc,
-                }
-            })
-    }
-
-    fn food_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
-        state
-            .decors
-            .iter()
-            .enumerate()
-            .filter(|(_, decor)| decor.owned)
-            .fold(10_000, |acc, (index, _)| {
-                match self.data.decors[index].effect {
-                    DecorEffect::FoodKpPermyriad(mult) => acc * mult / 10_000,
-                    _ => acc,
-                }
-            })
-    }
-
-    fn skill_kp_bonus_permyriad(&self, state: &GameState) -> u32 {
-        state
-            .decors
-            .iter()
-            .enumerate()
-            .filter(|(_, decor)| decor.owned)
-            .fold(10_000, |acc, (index, _)| {
-                match self.data.decors[index].effect {
-                    DecorEffect::SkillKpPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::EventCoinPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 }
             })
@@ -2500,7 +2536,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .fold(
                 self.coin_bonus_permyriad(state),
                 |acc, (index, _)| match self.data.decors[index].effect {
-                    DecorEffect::LeagueCoinPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::LeagueCoinPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 },
             )
@@ -2515,7 +2551,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .fold(
                 self.coin_bonus_permyriad(state),
                 |acc, (index, _)| match self.data.decors[index].effect {
-                    DecorEffect::TreasureCoinPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::TreasureCoinPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 },
             )
@@ -2530,7 +2566,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .fold(
                 self.coin_bonus_permyriad(state),
                 |acc, (index, _)| match self.data.decors[index].effect {
-                    DecorEffect::LevelUpCoinPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::LevelUpCoinPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 },
             )
@@ -2544,6 +2580,22 @@ impl<R: Rules> WallTimeSimulator<R> {
         }
     }
 
+    fn individual_bonus_permyriad(&self, state: &GameState, kind: u32) -> u32 {
+        if kind != 0 && state.magikarp.individual_bonus_type == kind {
+            10_000_u32.saturating_add(state.magikarp.individual_bonus_permyriad)
+        } else {
+            10_000
+        }
+    }
+
+    fn ikesu_booster_bonus_permyriad(&self, state: &GameState) -> u32 {
+        10_000_u32.saturating_add(state.ikesu_booster_level.saturating_mul(100))
+    }
+
+    fn next_ikesu_booster_upgrade_cost(&self, state: &GameState) -> Option<u64> {
+        self.data.ikesu_upgrade_price(state.ikesu_booster_level)
+    }
+
     fn trainer_exp_bonus_permyriad(&self, state: &GameState) -> u32 {
         state
             .decors
@@ -2552,7 +2604,7 @@ impl<R: Rules> WallTimeSimulator<R> {
             .filter(|(_, decor)| decor.owned)
             .fold(10_000, |acc, (index, _)| {
                 match self.data.decors[index].effect {
-                    DecorEffect::TrainerExpPermyriad(mult) => acc * mult / 10_000,
+                    DecorEffect::TrainerExpPermyriad(mult) => combine_permyriad(acc, mult),
                     _ => acc,
                 }
             })
@@ -2701,6 +2753,20 @@ fn support_slug_from_master_id(id: u32) -> Option<&'static str> {
         15 => Some("mimikyu"),
         16 => Some("gardevoir"),
         _ => None,
+    }
+}
+
+fn combine_permyriad(left: u32, right: u32) -> u32 {
+    let combined = u64::from(left) * u64::from(right) / 10_000;
+    combined.min(u64::from(u32::MAX)) as u32
+}
+
+fn individual_kind_for_kp_type(specific_bonus_type: u32) -> u32 {
+    match specific_bonus_type {
+        6 => 1,
+        7 => 2,
+        3 => 3,
+        _ => 0,
     }
 }
 
@@ -3154,7 +3220,115 @@ mod tests {
     }
 
     #[test]
-    fn one_intentional_loss_per_reached_league() {
+    fn max_level_magikarp_only_has_league_actions() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(ApproxRules, data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        state.magikarp.level = state.magikarp.max_level;
+        state.stamina = state.max_stamina;
+        state.berries[0].available = 1;
+        state.pending_achievement_claims = 1;
+        state.home_treasure_ready_at = state.now();
+        state.home_random_event_ready_at = state.now();
+
+        let actions = simulator.available_actions(&state);
+
+        assert!(!actions.is_empty());
+        assert!(
+            actions
+                .iter()
+                .all(|available| matches!(available.action, WallAction::LeagueFight { .. }))
+        );
+    }
+
+    #[test]
+    fn max_level_league_loss_retires_and_fishes_new_magikarp() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(ApproxRules, data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        state.magikarp.level = state.magikarp.max_level;
+        state.magikarp.kp = 0;
+        let before_generation = state.generation;
+        let before_retirements = state.retirements;
+        let mut purchases = Vec::new();
+        let mut action_log = Vec::new();
+
+        simulator.apply_action(
+            &mut state,
+            WallAction::LeagueFight {
+                intent: LeagueFightIntent::TryWin,
+            },
+            &mut rng,
+            &mut purchases,
+            &mut action_log,
+        );
+
+        assert_eq!(state.generation, before_generation + 1);
+        assert_eq!(state.retirements, before_retirements + 1);
+        assert_eq!(state.magikarp.level, 1);
+        assert_eq!(state.league, 0);
+        assert_eq!(state.competition, 0);
+    }
+
+    #[test]
+    fn apk_master_loads_rods_patterns_and_pond_booster_data() {
+        let data = GameData::apk_master();
+
+        assert_eq!(data.current_rod_id(0), 1);
+        assert_eq!(data.current_rod_id(1), 2);
+        assert_eq!(data.current_rod_id(6), 7);
+        assert_eq!(data.patterns.len(), 33);
+        assert_eq!(data.pattern_bonuses.len(), 103);
+        assert_eq!(data.ikesu_booster_prices.len(), 100);
+        assert_eq!(data.economy.retire_ikesu_bonus.value, 10);
+        assert_eq!(data.economy.ikesu_bonus_max.value, 2_500);
+    }
+
+    #[test]
+    fn individual_and_pond_bonuses_apply_to_matching_kp_sources() {
+        let data = GameData::approx_v1();
+        let simulator = WallTimeSimulator::new(ApproxRules, data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        state.magikarp.individual_bonus_permyriad = 5_000;
+
+        state.magikarp.individual_bonus_type = 1;
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 6), 15_000);
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 7), 10_000);
+
+        state.magikarp.individual_bonus_type = 2;
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 6), 10_000);
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 7), 15_000);
+
+        state.magikarp.individual_bonus_type = 3;
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 3), 15_000);
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 10), 10_000);
+
+        state.magikarp.individual_bonus_type = 0;
+        state.ikesu_booster_level = 10;
+        assert_eq!(simulator.kp_bonus_permyriad(&state, 6), 11_000);
+    }
+
+    #[test]
+    fn retirement_increases_pond_booster_bonus() {
+        let data = GameData::apk_master();
+        let simulator =
+            WallTimeSimulator::new(ApkRules::new(&data), data, WallSimConfig::default());
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut state = simulator.initial_wall_state(&mut rng);
+        state.magikarp.level = state.magikarp.max_level;
+        state.magikarp.kp = 0;
+
+        simulator.league_fight(&mut state, false, &mut rng);
+
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.ikesu_booster_level, 10);
+    }
+
+    #[test]
+    fn league_losses_do_not_repeat_per_league() {
         let data = GameData::approx_v1();
         let result = sim().run(3, data.preset_plan("none"));
         let intentional_loss_leagues = result
@@ -3170,15 +3344,19 @@ mod tests {
             .filter(|entry| entry.event == "league_loss")
             .count();
         assert_eq!(intentional_losses, intentional_loss_leagues.len());
-        assert!(intentional_losses >= result.final_state.league.min(4) as usize);
+        assert!(intentional_losses <= result.final_state.league as usize);
     }
 
     #[test]
     fn current_magikarp_max_level_is_fixed_when_fished() {
         let data = GameData::approx_v1();
+        let rules = ApproxRules;
         let result = sim().run(42, data.preset_plan("none"));
         assert!(result.final_state.player_rank > 1);
-        assert_eq!(result.final_state.magikarp.max_level, 11);
+        assert_eq!(
+            result.final_state.magikarp.max_level,
+            rules.max_level_for_rank(result.final_state.player_rank)
+        );
     }
 
     #[test]

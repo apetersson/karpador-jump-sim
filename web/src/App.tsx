@@ -73,6 +73,7 @@ interface StartState {
   competition: number;
   generation: number;
   retirements: number;
+  ikesu_booster_level: number;
   magikarp_level: number;
   magikarp_kp: number;
   candy: number;
@@ -118,6 +119,7 @@ const UI_TEXT: Record<
   | 'startStateCompetition'
   | 'startStateGeneration'
   | 'startStateRetirements'
+  | 'startStateIkesuBoosterLevel'
   | 'startStateMagikarpLevel'
   | 'startStateMagikarpKp'
   | 'startStateCandy'
@@ -243,6 +245,11 @@ const UI_TEXT: Record<
     de: 'Rücksetzungen',
     en: 'Retirements',
     ja: 'リタイア',
+  },
+  startStateIkesuBoosterLevel: {
+    de: 'Ikesu-Booster-Level',
+    en: 'Pond booster level',
+    ja: 'いけすブースターLv',
   },
   startStateMagikarpLevel: {
     de: 'Karpador-Level',
@@ -1133,6 +1140,7 @@ const mergeStartState = (fallback: StartState, value: Partial<StartState> | null
     competition: toInt(value.competition, fallback.competition),
     generation: toInt(value.generation, fallback.generation),
     retirements: toInt(value.retirements, fallback.retirements),
+    ikesu_booster_level: toInt(value.ikesu_booster_level, fallback.ikesu_booster_level),
     magikarp_level: toInt(value.magikarp_level, fallback.magikarp_level),
     magikarp_kp: toInt(value.magikarp_kp, fallback.magikarp_kp),
     candy: toInt(value.candy, fallback.candy),
@@ -1225,6 +1233,7 @@ type StartStateScalarKey =
   | 'competition'
   | 'generation'
   | 'retirements'
+  | 'ikesu_booster_level'
   | 'magikarp_level'
   | 'magikarp_kp'
   | 'candy'
@@ -1434,6 +1443,7 @@ function App() {
           competition: initialCompetition,
           generation: 18,
           retirements: 17,
+          ikesu_booster_level: 170,
           magikarp_level: 31,
           magikarp_kp: 0,
           candy: 4,
@@ -1562,6 +1572,7 @@ function App() {
       competition: toInt(form.start_state.competition, 0),
       generation: toInt(form.start_state.generation, 1),
       retirements: toInt(form.start_state.retirements, 0),
+      ikesu_booster_level: toInt(form.start_state.ikesu_booster_level, 0),
       magikarp_level: toInt(form.start_state.magikarp_level, 1),
       magikarp_kp: toInt(form.start_state.magikarp_kp, 0),
       candy: toInt(form.start_state.candy, 0),
@@ -2119,6 +2130,15 @@ function App() {
             min={0}
             max={80}
             onCommit={(value) => handleStartStateChange('retirements', value)}
+          />
+
+          <NumberInput
+            language={language}
+            label={t('startStateIkesuBoosterLevel', language)}
+            value={form.start_state.ikesu_booster_level}
+            min={0}
+            max={2500}
+            onCommit={(value) => handleStartStateChange('ikesu_booster_level', value)}
           />
 
           <NumberInput
